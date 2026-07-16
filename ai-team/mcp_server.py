@@ -70,36 +70,37 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
         save_session("chatgpt", {"access_token": token})
         return "ChatGPT logged in successfully! You can now use ask_chatgpt."
     elif service == "gemini":
-        # Check if it's an API key (starts with AIza) or browser cookies
-        if token.startswith("AIza"):
-            save_session("gemini", {"api_key": token, "model": "gemini-2.5-flash"})
-            return "Gemini logged in with API key! You can now use ask_gemini."
-        else:
-            # Try as JSON cookies dict
-            import json as _json
-            try:
-                cookies = _json.loads(token)
-                if isinstance(cookies, dict):
-                    # Merge: keep API key if already set, add cookies
-                    existing = get_session("gemini")
-                    existing["cookies"] = cookies
-                    save_session("gemini", existing)
-                    return (f"Gemini logged in with {len(cookies)} browser cookies! Using your Advanced subscription.\n"
-                            "You can now use ask_gemini.")
-            except (ValueError, TypeError):
-                pass
-            # Try as cookie header string (name1=val1; name2=val2)
-            if "=" in token and ";" in token:
-                from agents.gemini_agent import parse_cookie_string
-                cookies = parse_cookie_string(token)
+        # Detect: cookie string (has ; and =, multiple pairs), JSON dict, or API key
+        # Cookie strings have multiple semicolons with key=value pairs
+        import json as _json
+
+        # Try as JSON cookies dict first
+        try:
+            cookies = _json.loads(token)
+            if isinstance(cookies, dict):
                 existing = get_session("gemini")
                 existing["cookies"] = cookies
                 save_session("gemini", existing)
                 return (f"Gemini logged in with {len(cookies)} browser cookies! Using your Advanced subscription.\n"
                         "You can now use ask_gemini.")
-            # Assume it's an API key even without AIza prefix
-            save_session("gemini", {"api_key": token, "model": "gemini-2.5-flash"})
-            return "Gemini logged in with API key! You can now use ask_gemini."
+        except (ValueError, TypeError):
+            pass
+
+        # Try as cookie header string (name1=val1; name2=val2; ...)
+        # Cookie strings have multiple ; separators — API keys don't
+        if ";" in token and "=" in token:
+            from agents.gemini_agent import parse_cookie_string
+            cookies = parse_cookie_string(token)
+            if len(cookies) > 1:  # Real cookie strings have many pairs
+                existing = get_session("gemini")
+                existing["cookies"] = cookies
+                save_session("gemini", existing)
+                return (f"Gemini logged in with {len(cookies)} browser cookies! Using your Advanced subscription.\n"
+                        "You can now use ask_gemini.")
+
+        # Otherwise treat as API key
+        save_session("gemini", {"api_key": token, "model": "gemini-2.5-flash"})
+        return "Gemini logged in with API key! You can now use ask_gemini."
     elif service == "perplexity":
         if token.startswith("pplx-"):
             # Official API key
