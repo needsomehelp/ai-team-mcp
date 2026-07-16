@@ -41,11 +41,21 @@ class ChatGPTWebAgent(BaseAgent):
             "Referer": "https://chatgpt.com/",
         }
 
-    def _fetch_image_url(self, file_id: str) -> str:
-        """Resolve a ChatGPT file-service asset pointer to a real download URL."""
-        # file_id arrives as "file-service://file-XXXX" — strip prefix
-        clean_id = file_id.replace("file-service://", "")
+    def _fetch_image_url(self, asset_pointer: str) -> str:
+        """Resolve a ChatGPT asset pointer to a real download URL.
+        Handles both schemes:
+          - sediment://file_XXXX  (current format)
+          - file-service://file-XXXX  (older format)
+        """
+        # Strip known scheme prefixes to get the raw file ID
+        clean_id = asset_pointer
+        for prefix in ("sediment://", "file-service://"):
+            if clean_id.startswith(prefix):
+                clean_id = clean_id[len(prefix):]
+                break
+
         try:
+            # Try current endpoint: estuary/content
             resp = requests.get(
                 f"{self.BASE_URL}/files/{clean_id}/download",
                 headers=self._headers(accept="application/json"),
@@ -53,17 +63,21 @@ class ChatGPTWebAgent(BaseAgent):
             )
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("download_url", "")
+                url = data.get("download_url", "")
+                if url:
+                    return url
         except Exception:
             pass
-        return ""
+        # Fallback: direct estuary content URL (used by ChatGPT web app)
+        return f"{self.BASE_URL}/estuary/content?id={clean_id}"
 
     def _parse_sse_stream(self, response):
         """Parse the SSE stream, collecting text and resolving image URLs."""
         full_text = ""
         image_urls = []
 
-        for line in response.iter_lines(decode_unicode=True):
+        all_lines = list(response.iter_lines(decode_unicode=True))
+        for line in all_lines:
             if not line or not line.startswith("data: "):
                 continue
             data_str = line[6:]
@@ -72,7 +86,9 @@ class ChatGPTWebAgent(BaseAgent):
             try:
                 data = json.loads(data_str)
                 msg = data.get("message", {})
-                if msg.get("author", {}).get("role") != "assistant":
+                # Accept assistant messages and tool/system messages that carry image data
+                role = msg.get("author", {}).get("role", "")
+                if role not in ("assistant", "tool", ""):
                     continue
 
                 content = msg.get("content", {})
@@ -140,12 +156,37 @@ class ChatGPTWebAgent(BaseAgent):
             text, image_urls = self._parse_sse_stream(response)
 
             if image_urls:
-                url_block = "\n".join(f"Image URL: {u}" for u in image_urls)
-                combined = f"{text}\n\n{url_block}".strip() if text else url_block
-                return AgentResult(self.name, self.role, combined, True)
+                # Fetch the image bytes using auth headers (URL requires session token)
+                fetched_urls = []
+                for img_url in image_urls:
+                    try:
+                        r = requests.get(
+                            img_url,
+                            headers=self._headers(accept="image/*"),
+                            timeout=60,
+                            stream=True,
+                        )
+                        if r.status_code == 200:
+                            import tempfile
+                            ext = "png" if "png" in r.headers.get("content-type", "") else "jpg"
+                            tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
+                            for chunk in r.iter_content(8192):
+                                tmp.write(chunk)
+                            tmp.close()
+                            fetched_urls.append((img_url, tmp.name))
+                    except Exception:
+                        fetched_urls.append((img_url, ""))
+
+                lines = []
+                if text:
+                    lines.append(text)
+                for cdn_url, local_path in fetched_urls:
+                    lines.append(f"Image URL: {cdn_url}")
+                    if local_path:
+                        lines.append(f"Saved to: {local_path}")
+                return AgentResult(self.name, self.role, "\n".join(lines), True)
 
             # GPT-4o responded with text only (didn't trigger DALL-E)
-            # Return the text so caller knows what happened
             if text:
                 return AgentResult(self.name, self.role, text, False,
                                  "ChatGPT responded with text instead of generating an image.")
