@@ -32,8 +32,8 @@ class AgentTeam:
         """Check which agents are logged in and ready."""
         return {name: agent.is_ready() for name, agent in self.agents.items()}
 
-    def get_project_context(self, max_chars: int = 6000) -> str:
-        """Gather project context from the working directory."""
+    def get_project_context(self, max_chars: int = 1500) -> str:
+        """Gather minimal project context — just enough for agents to orient themselves."""
         context_parts = []
 
         try:
@@ -44,24 +44,42 @@ class AgentTeam:
                 capture_output=True, text=True, cwd=self.project_dir, timeout=5
             )
             if result.stdout:
-                context_parts.append(f"PROJECT FILES:\n{result.stdout[:1500]}")
+                context_parts.append(f"FILES:\n{result.stdout[:600]}")
         except Exception:
             pass
 
-        for readme in ["README.md", "readme.md"]:
-            path = os.path.join(self.project_dir, readme)
-            if os.path.exists(path):
-                with open(path, "r") as f:
-                    context_parts.append(f"README:\n{f.read()[:1200]}")
-                break
-
-        for pkg_file in ["package.json", "requirements.txt", "Cargo.toml", "go.mod", "Makefile"]:
+        for pkg_file in ["requirements.txt", "package.json", "go.mod"]:
             path = os.path.join(self.project_dir, pkg_file)
             if os.path.exists(path):
                 with open(path, "r") as f:
-                    context_parts.append(f"{pkg_file}:\n{f.read()[:800]}")
+                    context_parts.append(f"{pkg_file}:\n{f.read()[:400]}")
+                break
 
         return "\n\n".join(context_parts)[:max_chars]
+
+    @staticmethod
+    def route_task(task: str) -> list:
+        """Return only the agent roles needed for this task — avoids calling all 4 for simple tasks."""
+        task_lower = task.lower()
+
+        # Research only
+        if any(w in task_lower for w in ["research", "find", "latest", "what is", "docs", "library", "compare", "best practice"]):
+            return ["researcher"]
+
+        # Architecture/design only
+        if any(w in task_lower for w in ["design", "architect", "structure", "plan", "schema", "database", "system"]):
+            return ["architect"]
+
+        # Code review only
+        if any(w in task_lower for w in ["review", "security", "bug", "audit", "check", "vulnerability"]):
+            return ["reviewer"]
+
+        # Simple fix/edit — just coder, maybe reviewer
+        if any(w in task_lower for w in ["fix", "refactor", "rename", "move", "delete", "update", "change"]):
+            return ["coder", "reviewer"]
+
+        # Full pipeline for build/implement tasks
+        return ["researcher", "architect", "coder", "reviewer"]
 
     def run_single(self, role: str, task: str, context: str = "") -> AgentResult:
         """Run a single agent on a task."""
@@ -104,46 +122,50 @@ class AgentTeam:
         return results
 
     def run_pipeline(self, task: str, context: str = "") -> list:
-        """Full team pipeline:
-        1. Perplexity researches the topic
-        2. ChatGPT designs the architecture
-        3. Claude codes the implementation
-        4. Gemini reviews the code
-
-        Each step feeds into the next.
-        """
+        """Smart pipeline — routes to only the agents needed, passes compressed summaries between steps."""
         if not context:
             context = self.get_project_context()
 
+        roles = self.route_task(task)
         pipeline_results = []
 
-        # Step 1: Research + Architecture in parallel (Perplexity + ChatGPT)
-        parallel_results = self.run_parallel({
-            "researcher": f"Research best approaches, libraries, and patterns for: {task}",
-            "architect": f"Design the architecture and file structure for: {task}",
-        }, context)
+        # Step 1: Research + Architecture in parallel (only if routed)
+        parallel_tasks = {}
+        if "researcher" in roles:
+            parallel_tasks["researcher"] = f"Key facts, libraries, patterns for: {task}. Bullets only."
+        if "architect" in roles:
+            parallel_tasks["architect"] = f"File structure and interfaces for: {task}. Bullets only."
 
-        pipeline_results.append(("research [Perplexity]", parallel_results.get("researcher")))
-        pipeline_results.append(("architecture [ChatGPT]", parallel_results.get("architect")))
+        if parallel_tasks:
+            parallel_results = self.run_parallel(parallel_tasks, context)
+            for role, label in [("researcher", "research [Perplexity]"), ("architect", "architecture [ChatGPT]")]:
+                if role in parallel_tasks:
+                    pipeline_results.append((label, parallel_results.get(role)))
 
-        # Build enriched context from step 1
+        # Build enriched context — cap each agent's contribution at 800 chars to save tokens
         enriched = context
         for _, result in pipeline_results:
             if result and result.success:
-                enriched += f"\n\n--- {result.agent_name} says ---\n{result.content[:3000]}"
+                enriched += f"\n\n[{result.agent_name}]: {result.content[:800]}"
 
-        # Step 2: Claude codes the implementation
-        code_result = self.run_single("coder", task, enriched)
-        pipeline_results.append(("implementation [Claude]", code_result))
+        # Step 2: Claude codes (only if routed)
+        code_result = None
+        if "coder" in roles:
+            code_result = self.run_single("coder", task, enriched)
+            pipeline_results.append(("implementation [Claude]", code_result))
 
-        # Step 3: Gemini reviews the code
-        if code_result and code_result.success:
-            review_context = enriched + f"\n\n--- CODE TO REVIEW ---\n{code_result.content[:4000]}"
+        # Step 3: Gemini reviews (only if routed + code exists)
+        if "reviewer" in roles and code_result and code_result.success:
+            # Only send the code, not the full enriched context — Gemini only needs to review
             review_result = self.run_single(
                 "reviewer",
-                f"Review this implementation for bugs, security issues, and improvements: {task}",
-                review_context
+                f"Review for bugs and security issues:\n{code_result.content[:2000]}",
+                "",
             )
+            pipeline_results.append(("review [Gemini]", review_result))
+        elif "reviewer" in roles and not code_result:
+            # Review-only task (no coder step)
+            review_result = self.run_single("reviewer", task, context)
             pipeline_results.append(("review [Gemini]", review_result))
 
         return pipeline_results

@@ -27,8 +27,13 @@ class BaseAgent(ABC):
         pass
 
     def build_prompt(self, task: str, context: str, role_instruction: str) -> str:
-        parts = [f"You are the {self.role} on a software team.", role_instruction]
+        parts = [
+            f"You are the {self.role} on a software team.",
+            role_instruction,
+            "FORMAT: bullet points only, max 200 words, no preamble, no filler.",
+        ]
         if context:
-            parts.append(f"\n--- PROJECT CONTEXT ---\n{context}\n--- END CONTEXT ---")
+            # Cap context at 800 chars — just enough for agents to understand the project
+            parts.append(f"\n--- PROJECT ---\n{context[:800]}\n---")
         parts.append(f"\n--- TASK ---\n{task}")
         return "\n".join(parts)

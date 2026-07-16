@@ -405,6 +405,28 @@ class TestAgentTeam:
         assert team._service_name("reviewer") == "gemini"
         assert team._service_name("researcher") == "perplexity"
 
+    def test_route_task_research_only(self):
+        from agents.team import AgentTeam
+        roles = AgentTeam.route_task("research best Python ORMs")
+        assert roles == ["researcher"]
+
+    def test_route_task_review_only(self):
+        from agents.team import AgentTeam
+        roles = AgentTeam.route_task("review this code for security bugs")
+        assert "reviewer" in roles
+        assert "researcher" not in roles
+
+    def test_route_task_fix_skips_research(self):
+        from agents.team import AgentTeam
+        roles = AgentTeam.route_task("fix the login bug")
+        assert "researcher" not in roles
+        assert "architect" not in roles
+
+    def test_route_task_full_pipeline_for_build(self):
+        from agents.team import AgentTeam
+        roles = AgentTeam.route_task("build a REST API with authentication")
+        assert set(roles) == {"researcher", "architect", "coder", "reviewer"}
+
 
 # ── MCP Server Tools ────────────────────────────────────────
 
