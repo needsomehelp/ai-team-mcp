@@ -1,22 +1,38 @@
 <p align="center">
-  <h1 align="center">AI Team</h1>
-  <p align="center"><b>Turn Claude Code into a full software engineering team.</b></p>
+  <h1 align="center">AI Team MCP</h1>
+  <p align="center"><b>One prompt. Four AI minds. Better code.</b></p>
   <p align="center">Claude writes code. ChatGPT designs architecture. Gemini reviews. Perplexity researches.<br>All inside one MCP server. All from your terminal.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/needsomehelp/Team-/stargazers"><img src="https://img.shields.io/github/stars/needsomehelp/Team-?style=social" alt="Stars"></a>
+  <a href="https://github.com/needsomehelp/ai-team-mcp/stargazers"><img src="https://img.shields.io/github/stars/needsomehelp/ai-team-mcp?style=social" alt="Stars"></a>
+  <a href="https://github.com/needsomehelp/ai-team-mcp/actions"><img src="https://github.com/needsomehelp/ai-team-mcp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="#"><img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python"></a>
-  <a href="#"><img src="https://img.shields.io/badge/MCP-Compatible-orange.svg" alt="MCP"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Protocol-MCP-orange.svg" alt="MCP"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License"></a>
-  <a href="#"><img src="https://img.shields.io/badge/Cost-Free%20%26%20Open%20Source-red.svg" alt="Free"></a>
+  <a href="#"><img src="https://img.shields.io/badge/API%20Keys-Not%20Required-red.svg" alt="No API Keys"></a>
 </p>
 
 <p align="center"><i>Stop coding with one AI. Start shipping with an entire AI engineering team.</i></p>
 
 ---
 
-## Demo
+## Why Four AI Models?
+
+Each AI has a different strength. AI Team MCP uses them all:
+
+| AI | Role | What It Does Best |
+|----|------|-------------------|
+| **Claude** | Lead Coder | Implementation, debugging, refactoring |
+| **ChatGPT** | Architect | System design, planning, trade-offs |
+| **Gemini** | Reviewer | Code review, bugs, security analysis |
+| **Perplexity** | Researcher | Latest docs, libraries, real-time info |
+
+**All use your existing browser subscriptions. No API keys required.**
+
+---
+
+## How It Works
 
 ```
 You: "Build a FastAPI auth system with JWT"
@@ -40,70 +56,38 @@ You: "Build a FastAPI auth system with JWT"
 
 ---
 
-## Why AI Team?
-
-You already pay for multiple AI subscriptions. But using them means:
-
-```
-Open ChatGPT tab -> copy code -> Open Claude tab -> paste ->
-Open Gemini -> paste -> Open Perplexity -> search ->
-Manually merge everything -> Repeat forever
-```
-
-**That's not a team. That's chaos.**
-
-AI Team fixes this:
-
-| Without AI Team | With AI Team |
-|----------------|-------------|
-| One model does everything | 4 specialized AI experts collaborate |
-| No architecture phase | ChatGPT designs the system first |
-| No code review | Gemini reviews every output |
-| Hallucinated APIs & outdated docs | Perplexity researches real-time info |
-| Manual copy-paste between tabs | Automatic orchestration |
-| You merge everything yourself | Claude synthesizes the final result |
-
----
-
-## Features
-
-- **Claude** remains your coding lead — writes, debugs, refactors
-- **ChatGPT** designs architecture, plans systems, evaluates trade-offs
-- **Gemini** reviews code for bugs, security flaws, and performance
-- **Perplexity** researches latest docs, libraries, and best practices
-- **Parallel execution** — agents work simultaneously when possible
-- **MCP compatible** — works natively inside Claude Code
-- **CLI included** — also works standalone from any terminal
-- **Your keys stay local** — credentials never leave your machine
-- **Open source** — audit every line of code
-
----
-
 ## Quick Start (2 minutes)
 
 ### Step 1: Clone & Install
 
 ```bash
-git clone https://github.com/needsomehelp/Team-.git
-cd Team-/ai-team
+git clone https://github.com/needsomehelp/ai-team-mcp.git
+cd ai-team-mcp/ai-team
 pip install -r requirements.txt
 ```
 
 ### Step 2: Add to Claude Code
 
 ```bash
-claude mcp add ai-team -s user python3 /absolute/path/to/Team-/ai-team/mcp_server.py
+claude mcp add ai-team -s user python3 $(pwd)/mcp_server.py
 ```
 
-> Replace `/absolute/path/to/` with the actual path where you cloned the repo.
+### Step 3: Log in your agents
 
-### Step 3: Verify it works
+```
+> Use ai_team_login with service='chatgpt', token='<your access token>'
+> Use ai_team_login with service='gemini', token='<your __Secure-1PSID cookie>'
+> Use ai_team_login with service='perplexity', token='<your cookie string>'
+```
+
+### Step 4: Verify
 
 ```bash
 claude mcp list
+# Should show: ai-team ✓ Connected
 ```
 
-You should see `ai-team` in the list. Done! Now just talk to Claude Code:
+Now just talk to Claude Code:
 
 ```
 > "Ask ChatGPT to design a caching layer"
@@ -114,149 +98,82 @@ You should see `ai-team` in the list. Done! Now just talk to Claude Code:
 
 ---
 
+## Without AI Team vs With AI Team
+
+| Without AI Team | With AI Team |
+|----------------|-------------|
+| One model does everything | 4 specialized AI experts collaborate |
+| No architecture phase | ChatGPT designs the system first |
+| No code review | Gemini reviews every output |
+| Hallucinated APIs & outdated docs | Perplexity researches real-time info |
+| Manual copy-paste between tabs | Automatic orchestration |
+| You merge everything yourself | Claude synthesizes the final result |
+| Needs expensive API keys | Uses your existing browser subscriptions |
+
+---
+
+## Features
+
+- **4 AI agents** working together on every task
+- **Browser cookie auth** — uses your existing subscriptions (ChatGPT Plus, Gemini Advanced, Perplexity Pro)
+- **No API keys required** — zero extra cost
+- **Parallel execution** — agents work simultaneously when possible
+- **Pipeline mode** — Research → Architecture → Code → Review
+- **MCP compatible** — works natively inside Claude Code
+- **CLI included** — also works standalone from any terminal
+- **Your keys stay local** — credentials never leave your machine
+- **62 tests** — full smoke test coverage for all agents
+- **CI pipeline** — automated linting and testing
+
+---
+
 ## Authentication Setup
 
-Each AI uses **your own subscription**. No middleman, no extra costs, no API proxy.
+Each AI uses **your own subscription** via browser cookies. No middleman, no extra costs.
 
-| Service | Auth Method | Cost |
-|---------|------------|------|
-| ChatGPT | Browser session token | Free (uses your Plus/Pro sub) |
-| Gemini | API key OR browser cookies | Free (API key or Advanced sub) |
-| Perplexity | API key or browser cookies | Free with Pro / ~$0.001 per query via API |
-| Claude | CLI login | Free (uses your Claude Code sub) |
+| Service | What You Need | Cost |
+|---------|--------------|------|
+| ChatGPT | Session token from browser | Free (your Plus/Pro sub) |
+| Gemini | `__Secure-1PSID` cookie from browser | Free (your Advanced sub) |
+| Perplexity | Cookie string from browser | Free (your Pro sub) |
+| Claude | Already logged into Claude Code | Free (your Claude sub) |
 
 ---
 
 ### ChatGPT Setup
 
-> **Important:** This uses your ChatGPT web session — NOT the OpenAI API. No API key needed.
+1. Log into [chatgpt.com](https://chatgpt.com) in your browser
+2. Open this URL in the same browser: `https://chatgpt.com/api/auth/session`
+3. Copy the `accessToken` value (the long string)
+4. In Claude Code: `Use ai_team_login with service='chatgpt', token='<paste>'`
 
-**Step 1:** Log into [chatgpt.com](https://chatgpt.com) in your browser
-
-**Step 2:** Open this URL in the same browser:
-
-```
-https://chatgpt.com/api/auth/session
-```
-
-**Step 3:** You'll see JSON like this:
-
-```json
-{
-  "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6Ikp..."
-}
-```
-
-**Step 4:** Copy ONLY the token value (the long string after `"accessToken":`)
-
-**Step 5:** Save it:
-
-```bash
-python3 aiteam.py login chatgpt
-# Paste your access token when prompted
-```
-
-> **Token expires?** If ChatGPT stops working, just repeat these steps to get a fresh token. This happens after you log out or after a few weeks.
-
-> **Getting "Unauthorized"?** Make sure you're logged into ChatGPT first, then refresh the `/api/auth/session` page.
+> Token expires after a few weeks. Just repeat these steps to refresh.
 
 ---
 
 ### Gemini Setup
 
-Two options — use whichever you prefer:
+1. Log into [gemini.google.com](https://gemini.google.com) in your browser
+2. Open DevTools (`F12`) → **Application** → **Cookies** → `gemini.google.com`
+3. Find `__Secure-1PSID` — copy its value
+4. *(Optional)* Also copy `__Secure-1PSIDTS` for longer sessions
+5. In Claude Code: `Use ai_team_login with service='gemini', token='<paste 1PSID value>'`
 
-#### Option A: API Key (Free - Recommended)
+> Uses the `gemini-webapi` library under the hood. Your Gemini Advanced subscription gives you access to the latest models.
 
-> Google gives you 500 requests/day on Gemini Flash, 25/day on Pro. No credit card needed.
-
-**Step 1:** Go to [Google AI Studio](https://aistudio.google.com/apikey)
-
-**Step 2:** Sign in with your Google account
-
-**Step 3:** Click **"Create API Key"**
-
-**Step 4:** Copy the key (starts with `AIza...`)
-
-**Step 5:** Save it:
-
-```bash
-python3 aiteam.py login gemini
-# Paste your API key when prompted
-```
-
-> **Multiple Google accounts?** Make sure you're signed into the correct account before creating the key.
-
-#### Option B: Browser Cookies (Uses your Gemini Advanced subscription)
-
-> Use your existing Gemini Advanced subscription — same as what you get in the browser.
-
-**Step 1:** Log into [gemini.google.com](https://gemini.google.com) in your browser
-
-**Step 2:** Open DevTools:
-- **Mac:** `Cmd + Option + I`
-- **Windows/Linux:** `F12`
-
-**Step 3:** Go to the **Network** tab
-
-**Step 4:** Click on any request to `gemini.google.com`
-
-**Step 5:** In the request headers, find **Cookie** and copy the entire value
-
-**Step 6:** Save it:
-
-```bash
-python3 aiteam.py login gemini
-# Paste the cookie string when prompted
-```
-
-> Cookies expire when you log out or after some time. Re-export if Gemini stops working.
+**Alternative:** You can also use a free API key from [Google AI Studio](https://aistudio.google.com/apikey) (500 req/day).
 
 ---
 
 ### Perplexity Setup
 
-Choose one of two methods:
+1. Log into [perplexity.ai](https://perplexity.ai) in your browser
+2. Open DevTools (`F12`) → **Network** tab
+3. Click any request to `perplexity.ai`
+4. Find the **Cookie** request header → copy the entire value
+5. In Claude Code: `Use ai_team_login with service='perplexity', token='<paste>'`
 
-#### Option A: API Key (Recommended)
-
-**Step 1:** Go to [Perplexity API Settings](https://www.perplexity.ai/settings/api)
-
-**Step 2:** Click **"Generate API Key"**
-
-**Step 3:** Copy the key (starts with `pplx-...`)
-
-**Step 4:** Save it:
-
-```bash
-python3 aiteam.py login perplexity
-# Paste your API key when prompted
-```
-
-> Costs ~$0.001 per query. You may need to add credits.
-
-#### Option B: Browser Cookies (Free with Pro)
-
-**Step 1:** Open [perplexity.ai](https://perplexity.ai) and make sure you're logged in
-
-**Step 2:** Open DevTools:
-- **Mac:** `Cmd + Option + I`
-- **Windows/Linux:** `F12`
-
-**Step 3:** Go to the **Network** tab
-
-**Step 4:** Click on any request to `perplexity.ai`
-
-**Step 5:** In the request headers, find **Cookie** and copy the entire value
-
-**Step 6:** Save it:
-
-```bash
-python3 aiteam.py login perplexity
-# Paste the cookie string when prompted
-```
-
-> Cookies expire when you log out. Re-export if Perplexity stops working.
+> Uses your Pro/Max subscription. Cookies expire when you log out.
 
 ---
 
@@ -277,8 +194,6 @@ claude login
 python3 aiteam.py status
 ```
 
-Expected output:
-
 ```
 AI TEAM STATUS
 ========================================
@@ -288,15 +203,13 @@ AI TEAM STATUS
   Perplexity Pro       READY
 ```
 
-All four should show **READY**. If any show **NOT LOGGED IN**, re-run the login step for that service.
-
 ---
 
 ## Usage
 
 ### From Claude Code (MCP) — Recommended
 
-Once installed, just talk naturally:
+Just talk naturally:
 
 ```
 > Ask ChatGPT to design the database schema for a todo app
@@ -307,24 +220,15 @@ Once installed, just talk naturally:
 
 #### Team Mode
 
-Add this to your project's `CLAUDE.md` to enable automatic team collaboration:
+Say **`aiteam start`** in Claude Code to activate team mode. Every response becomes a team effort — Claude automatically consults all agents before answering.
 
-```markdown
-When the user says "aiteam start":
-- Activate TEAM MODE
-- On every response, consult ChatGPT, Gemini, and Perplexity before replying
-- Synthesize all responses into one unified answer
-```
-
-Then just type **`aiteam start`** and every response becomes a team effort.
+Say **`aiteam stop`** to return to normal.
 
 ### CLI Commands
 
-Use directly from the terminal:
-
 | Command | What it does |
 |---------|-------------|
-| `python3 aiteam.py team "task"` | Full pipeline: research -> design -> code -> review |
+| `python3 aiteam.py team "task"` | Full pipeline: research → design → code → review |
 | `python3 aiteam.py plan "task"` | ChatGPT designs architecture |
 | `python3 aiteam.py review "task"` | Gemini reviews for bugs & security |
 | `python3 aiteam.py research "task"` | Perplexity researches latest info |
@@ -335,57 +239,12 @@ Use directly from the terminal:
 #### Global CLI (optional)
 
 ```bash
-cd Team-/ai-team
+cd ai-team-mcp/ai-team
 chmod +x aiteam.sh
 ln -s "$(pwd)/aiteam.sh" /usr/local/bin/aiteam
 
 # Now use from anywhere:
-aiteam status
 aiteam team "Build a REST API with auth"
-```
-
----
-
-## Examples
-
-### Full Team Pipeline
-
-```bash
-aiteam team "Build a REST API with authentication using FastAPI"
-```
-
-What happens:
-1. **Perplexity** researches latest FastAPI auth patterns and libraries
-2. **ChatGPT** designs the architecture, folder structure, and API endpoints
-3. **Claude** implements production-ready code
-4. **Gemini** reviews for bugs, security issues, and performance improvements
-
-### Individual Agents
-
-```bash
-# Research latest technologies
-aiteam research "Best Python ORMs in 2025"
-
-# Design a system
-aiteam plan "Microservice architecture for an e-commerce platform"
-
-# Review code for issues
-aiteam review "Check my auth middleware for security vulnerabilities"
-
-# Write code
-aiteam code "Implement WebSocket real-time notifications"
-```
-
-### Example Prompts to Try
-
-```
-"Build a Stripe payment integration"
-"Design a scalable notification system"
-"Review this codebase for SQL injection vulnerabilities"
-"Research the latest changes in React 19"
-"Implement JWT auth with refresh tokens"
-"Optimize these database queries for performance"
-"Build a CI/CD pipeline for this project"
 ```
 
 ---
@@ -407,7 +266,7 @@ aiteam code "Implement WebSocket real-time notifications"
                        Combined Result
 ```
 
-### MCP Tools Reference
+### MCP Tools
 
 | Tool | Description |
 |------|-------------|
@@ -421,70 +280,55 @@ aiteam code "Implement WebSocket real-time notifications"
 
 ---
 
-## Troubleshooting
+## Examples
 
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| ChatGPT returns "Unauthorized" | Token expired or not logged in | Log into chatgpt.com, get a fresh token from `/api/auth/session` |
-| ChatGPT returns empty response | Wrong token copied | Copy only the `accessToken` value, not the full JSON |
-| Gemini returns 403 | Invalid API key or expired cookies | Re-generate API key or re-export browser cookies |
-| Gemini quota exceeded | Free tier limit reached | Wait 24 hours for reset, or switch to browser cookies (Advanced sub) |
-| Perplexity returns 401 | Invalid API key or expired cookies | Re-generate API key or re-export cookies |
-| Claude MCP not found | Wrong path in `claude mcp add` | Run `claude mcp list` to check, re-add with correct absolute path |
-| `ModuleNotFoundError` | Missing dependencies | Run `pip install -r requirements.txt` |
-| Agent shows "NOT LOGGED IN" | Credentials not saved | Run `python3 aiteam.py login <service>` |
+```bash
+# Full team pipeline
+aiteam team "Build a REST API with authentication using FastAPI"
 
-### Verification Checklist
+# Individual agents
+aiteam research "Best Python ORMs in 2026"
+aiteam plan "Microservice architecture for e-commerce"
+aiteam review "Check my auth middleware for security vulnerabilities"
+aiteam code "Implement WebSocket real-time notifications"
+```
 
-- [ ] `claude mcp list` shows `ai-team`
-- [ ] `python3 aiteam.py status` shows all agents as READY
-- [ ] ChatGPT token is fresh (not expired)
-- [ ] Gemini API key starts with `AIza...`
-- [ ] Perplexity key starts with `pplx-...` (if using API)
+### Try These Prompts in Claude Code
 
----
-
-## FAQ
-
-**Do I need an OpenAI API key?**
-No. AI Team uses your ChatGPT web session, not the OpenAI API. Your Plus/Pro subscription is enough.
-
-**Is Gemini really free?**
-Yes. Google AI Studio gives free API access: 500 requests/day (Flash), 25/day (Pro).
-
-**Can I use it without all 4 agents?**
-Yes. Any agent you don't log in will be skipped. You can use just Claude + ChatGPT, or any combination.
-
-**Does it send my code to all AIs?**
-Only when you ask it to. Individual agent calls only go to that one AI. The full pipeline sends the task through all four.
-
-**Where are my credentials stored?**
-In `sessions.json` on your local machine only. It's gitignored and never uploaded anywhere.
-
-**Can I add my own AI agents?**
-Yes! Extend `agents/base.py` and add your agent. PRs welcome.
+```
+"Build a Stripe payment integration"
+"Design a scalable notification system"
+"Review this codebase for SQL injection vulnerabilities"
+"Research the latest changes in React 19"
+"Compare Redis vs Memcached for session storage"
+"Build a CI/CD pipeline for this project"
+```
 
 ---
 
 ## Project Structure
 
 ```
-Team-/
+ai-team-mcp/
 ├── ai-team/
 │   ├── agents/
 │   │   ├── base.py              # Base agent class
 │   │   ├── claude_agent.py      # Claude Code integration
-│   │   ├── chatgpt_agent.py     # ChatGPT agent
-│   │   ├── gemini_agent.py      # Gemini agent
-│   │   ├── perplexity_agent.py  # Perplexity agent
+│   │   ├── chatgpt_agent.py     # ChatGPT (session token)
+│   │   ├── gemini_agent.py      # Gemini (gemini-webapi + API key)
+│   │   ├── perplexity_agent.py  # Perplexity (cookies + API key)
 │   │   ├── session_store.py     # Secure credential storage
 │   │   └── team.py              # Team coordinator & pipeline
-│   ├── mcp_server.py            # MCP server for Claude Code
+│   ├── tests/
+│   │   ├── test_agents.py       # 43 agent smoke tests
+│   │   ├── test_prime.py        # Demo module tests
+│   │   └── conftest.py          # Test configuration
+│   ├── mcp_server.py            # MCP server (7 tools)
 │   ├── aiteam.py                # CLI interface
 │   ├── aiteam.sh                # Global shell command
-│   ├── config.json              # Agent configuration
 │   ├── requirements.txt         # Python dependencies
 │   └── sessions.example.json    # Credentials template
+├── .github/workflows/ci.yml     # CI pipeline (ruff + pytest)
 ├── CLAUDE.md                    # Team mode instructions
 └── README.md
 ```
@@ -493,52 +337,68 @@ Team-/
 
 ## Security
 
-- **Your keys stay local.** Credentials are stored in `sessions.json` on your machine only.
-- **`sessions.json` is gitignored.** It will never be committed to the repo.
-- **No data sent to us.** All API calls go directly to the AI providers (OpenAI, Google, Perplexity).
+- **Your keys stay local.** Credentials stored in `sessions.json` on your machine only.
+- **`sessions.json` is gitignored.** Never committed to the repo.
+- **No data sent to us.** All API calls go directly to AI providers.
 - **No middleman.** No proxy server, no third-party relay.
 - **Open source.** Audit every line of code yourself.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| ChatGPT "Unauthorized" | Get fresh token from `chatgpt.com/api/auth/session` |
+| Gemini not responding | Re-copy `__Secure-1PSID` cookie from browser |
+| Perplexity 401 error | Re-copy cookies from DevTools → Network tab |
+| MCP not found | Run `claude mcp add ai-team -s user python3 /path/to/mcp_server.py` |
+| `ModuleNotFoundError` | Run `pip install -r requirements.txt` |
+| Agent "NOT LOGGED IN" | Run login step for that service |
 
 ---
 
 ## Roadmap
 
 - [x] Claude Code integration (MCP)
-- [x] ChatGPT (Plus/Pro via browser session)
-- [x] Gemini (API key via Google AI Studio)
-- [x] Perplexity (API + browser cookies)
-- [x] Full team pipeline (research -> design -> code -> review)
+- [x] ChatGPT Plus (browser session token)
+- [x] Gemini Advanced (browser cookies via gemini-webapi)
+- [x] Perplexity Pro (browser cookies)
+- [x] Full team pipeline (research → design → code → review)
 - [x] CLI interface
 - [x] Team mode for Claude Code
+- [x] 62 automated tests + CI pipeline
 - [ ] Grok integration
 - [ ] DeepSeek integration
 - [ ] Local LLM support (Ollama, LM Studio)
 - [ ] Web dashboard
 - [ ] VS Code extension
-- [ ] Cost tracking per agent
-- [ ] Custom agent roles
+- [ ] Conversation memory
+- [ ] Streaming responses
 
 ---
 
 ## Contributing
 
-Contributions are welcome!
+Contributions are welcome! See [CONTRIBUTING.md](ai-team/CONTRIBUTING.md) for details.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes
-4. Push and open a Pull Request
-
-See [CONTRIBUTING.md](ai-team/CONTRIBUTING.md) for details.
-
-### Ideas for Contributions
+### Good First Issues
 
 - New AI provider integrations (Grok, DeepSeek, Mistral, Ollama)
 - Better orchestration strategies
-- Improved prompts for each agent role
 - VS Code / JetBrains extensions
 - Web dashboard
-- Documentation improvements
+- Streaming responses
+
+---
+
+## Disclaimer
+
+This project uses **unofficial browser cookie authentication** for ChatGPT, Gemini, and Perplexity. These methods rely on reverse-engineered internal APIs and third-party libraries (`gemini-webapi`, `perplexity`). They may break at any time if providers change their internal endpoints. When they break, update the dependencies — the upstream libraries are actively maintained.
+
+For Gemini, you can alternatively use a **free official API key** from [Google AI Studio](https://aistudio.google.com/apikey) which is stable and supported.
+
+This tool is for **personal use** with your own subscriptions. Your credentials are stored locally and never transmitted to any third party.
 
 ---
 
@@ -551,7 +411,7 @@ MIT License. Free to use, modify, and distribute.
 <p align="center">
 <b>Stop asking one AI to do everything.<br>Build an AI engineering team instead.</b>
 <br><br>
-<a href="https://github.com/needsomehelp/Team-">Star this repo</a> if it saves you time.
+<a href="https://github.com/needsomehelp/ai-team-mcp">⭐ Star this repo</a> if it saves you time.
 <br>
-<a href="https://github.com/needsomehelp/Team-/issues">Report a bug</a> · <a href="https://github.com/needsomehelp/Team-/pulls">Submit a PR</a>
+<a href="https://github.com/needsomehelp/ai-team-mcp/issues">Report a bug</a> · <a href="https://github.com/needsomehelp/ai-team-mcp/pulls">Submit a PR</a> · <a href="https://github.com/needsomehelp/ai-team-mcp/discussions">Discussions</a>
 </p>
