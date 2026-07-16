@@ -131,7 +131,10 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
                 session_data["csrf_token"] = token2
             save_session("perplexity", session_data)
             return ("Perplexity logged in with session token! You can now use ask_perplexity.")
-    return f"Unknown service: {service}. Use: chatgpt, gemini, or perplexity"
+    elif service == "openai":
+        save_session("openai", {"api_key": token})
+        return "OpenAI API key saved. You can now use generate_image_dalle for DALL-E 3 images."
+    return f"Unknown service: {service}. Use: chatgpt, gemini, perplexity, or openai"
 
 
 _MEDIA_KEYWORDS = (
@@ -204,54 +207,122 @@ def ai_team_run(task: str, context: str = "") -> str:
 
 
 @mcp.tool()
-def generate_image(prompt: str, model: str = "", aspect_ratio: str = "1:1") -> str:
-    """Generate an image using Higgsfield AI. Returns a URL to the generated image.
-    Works where ChatGPT/Gemini cannot — the MCP bridge is image-capable here.
+def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: str = "flux") -> str:
+    """Generate an image and return a working URL. Uses Pollinations.ai (free, no API key).
+    ChatGPT and Gemini CANNOT do this — they only return text through the MCP bridge.
     Args:
-        prompt: Description of the image to generate
-        model: Optional model name (leave empty for default)
-        aspect_ratio: Image ratio e.g. '1:1', '16:9', '9:16' (default: '1:1')
+        prompt: Description of the image (be detailed for best results)
+        width:  Image width in pixels (default 1024)
+        height: Image height in pixels (default 1024)
+        model:  Model to use — 'flux' (best quality, default), 'turbo' (fastest), 'flux-realism'
     """
+    import urllib.parse
+    import requests as _req
+
+    encoded = urllib.parse.quote(prompt)
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?model={model}&width={width}&height={height}&nologo=true&enhance=true"
+    )
+
+    # Verify the image is reachable (Pollinations generates on first request)
+    try:
+        r = _req.head(url, timeout=45, allow_redirects=True)
+        if r.status_code == 200:
+            return (
+                f"Image generated successfully!\n\n"
+                f"URL: {url}\n\n"
+                f"Prompt: {prompt}\n"
+                f"Model: {model} | Size: {width}x{height}\n\n"
+                f"Open the URL in a browser to view or right-click to save."
+            )
+    except Exception:
+        pass
+
+    # Return URL anyway — Pollinations generates lazily on first GET
     return (
-        "[generate_image] This tool signals Claude to call the Higgsfield MCP generate_image tool directly.\n\n"
+        f"Image URL (opens/generates on first load):\n\n"
+        f"{url}\n\n"
         f"Prompt: {prompt}\n"
-        f"Aspect ratio: {aspect_ratio}\n"
-        f"Model: {model or 'default'}\n\n"
-        "Claude: call mcp__claude_ai_Higgsfield__generate_image with this prompt and return the image URL to the user."
+        f"Model: {model} | Size: {width}x{height}"
     )
 
 
 @mcp.tool()
-def generate_video(prompt: str, model: str = "", duration: int = 4) -> str:
-    """Generate a video using Higgsfield AI. Returns a URL to the generated video.
-    Works where ChatGPT/Gemini cannot — the MCP bridge is video-capable here.
+def generate_image_dalle(prompt: str, size: str = "1024x1024", quality: str = "standard") -> str:
+    """Generate an image with DALL-E 3 via OpenAI API (requires OpenAI API key).
+    Higher quality than Pollinations but needs sk-... API key saved via ai_team_login.
+    To set up: Use ai_team_login with service='openai', token='sk-your-key-here'
     Args:
-        prompt: Description of the video to generate
-        model: Optional model name (leave empty for default)
-        duration: Video length in seconds (default: 4)
+        prompt:  Description of the image
+        size:    '1024x1024', '1792x1024', or '1024x1792'
+        quality: 'standard' or 'hd'
+    """
+    import requests as _req
+
+    session = get_session("openai")
+    api_key = session.get("api_key", "")
+    if not api_key:
+        return (
+            "OpenAI API key not set. Run:\n"
+            "  ai_team_login(service='openai', token='sk-your-key')\n\n"
+            "Alternatively use generate_image (free, no key needed)."
+        )
+
+    try:
+        resp = _req.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": size, "quality": quality},
+            timeout=120,
+        )
+        if resp.status_code in (401, 403):
+            return "Invalid OpenAI API key. Update with ai_team_login(service='openai', token='sk-...')"
+        resp.raise_for_status()
+        data = resp.json()
+        image_url = data["data"][0]["url"]
+        revised = data["data"][0].get("revised_prompt", prompt)
+        return (
+            f"DALL-E 3 image generated!\n\n"
+            f"URL: {image_url}\n\n"
+            f"Revised prompt: {revised}\n"
+            f"Note: URL expires in 1 hour — download to keep it."
+        )
+    except Exception as e:
+        return f"DALL-E 3 failed: {e}"
+
+
+@mcp.tool()
+def generate_video(prompt: str, model: str = "", duration: int = 4) -> str:
+    """Generate a video. Routes to Higgsfield MCP which returns a real video URL.
+    ChatGPT and Gemini CANNOT do this through the MCP bridge.
+    Args:
+        prompt:   Description of the video
+        model:    Optional model name (leave empty for default)
+        duration: Length in seconds (default: 4)
     """
     return (
-        "[generate_video] This tool signals Claude to call the Higgsfield MCP generate_video tool directly.\n\n"
+        f"[generate_video → Higgsfield]\n\n"
         f"Prompt: {prompt}\n"
         f"Duration: {duration}s\n"
         f"Model: {model or 'default'}\n\n"
-        "Claude: call mcp__claude_ai_Higgsfield__generate_video with this prompt and return the video URL to the user."
+        "Claude: call mcp__claude_ai_Higgsfield__generate_video with this prompt and return the video URL."
     )
 
 
 @mcp.tool()
 def generate_audio(prompt: str, duration: int = 10) -> str:
-    """Generate audio using Higgsfield AI. Returns a URL to the generated audio.
-    Works where ChatGPT/Gemini cannot — the MCP bridge is audio-capable here.
+    """Generate audio/music. Routes to Higgsfield MCP which returns a real audio URL.
+    ChatGPT and Gemini CANNOT do this through the MCP bridge.
     Args:
-        prompt: Description of the audio/music to generate
+        prompt:   Description of the audio or music
         duration: Length in seconds (default: 10)
     """
     return (
-        "[generate_audio] This tool signals Claude to call the Higgsfield MCP generate_audio tool directly.\n\n"
+        f"[generate_audio → Higgsfield]\n\n"
         f"Prompt: {prompt}\n"
         f"Duration: {duration}s\n\n"
-        "Claude: call mcp__claude_ai_Higgsfield__generate_audio with this prompt and return the audio URL to the user."
+        "Claude: call mcp__claude_ai_Higgsfield__generate_audio with this prompt and return the audio URL."
     )
 
 
