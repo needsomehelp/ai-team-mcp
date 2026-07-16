@@ -4,14 +4,10 @@
 
 When the user says **"aiteam start"** or **"start the team"**:
 - Activate TEAM MODE for the rest of the conversation
-- On **every response**, automatically consult the AI team before replying:
-  1. Use `ask_perplexity` for any research/facts needed
-  2. Use `ask_chatgpt` for architecture/design/planning perspective
-  3. Use `ask_gemini` for code review/bugs/security perspective
-  4. Claude (you) synthesizes all responses into one unified answer
-- Run the agent calls **in parallel** when possible for speed
-- Always show which agents contributed to the answer
-- Format the final response as a combined team answer
+- **Do NOT call agents on every response** — only call agents when the task genuinely benefits
+- Use the routing rules below to decide which agents (if any) to call
+- Always show which agents contributed (or note "handled by Claude alone")
+- Keep the final synthesis SHORT — agents did the heavy lifting, you just combine
 
 When the user says **"aiteam stop"** or **"stop the team"**:
 - Deactivate TEAM MODE
@@ -20,14 +16,55 @@ When the user says **"aiteam stop"** or **"stop the team"**:
 When the user says **"aiteam status"**:
 - Call `ai_team_status` to check which agents are online
 
+---
+
+## Routing Rules — Which Agents to Call
+
+### Call NO agents (answer directly):
+- Simple questions, definitions, explanations
+- Short edits, renames, typo fixes
+- Status checks, "what does X do", "explain Y"
+- Any task Claude can answer confidently in < 5 sentences
+
+### Call Perplexity ONLY:
+- "research", "find", "latest", "best library", "compare X vs Y", "docs for X"
+- Any question requiring up-to-date or real-time information
+
+### Call Gemini ONLY:
+- "review", "check", "audit", "security", "find bugs", "is this safe"
+- After Claude has already written code that needs a second opinion
+
+### Call ChatGPT ONLY:
+- "design", "architect", "structure", "what's the best approach to build X"
+- Planning and system design questions before writing code
+
+### Call ALL agents (full pipeline via `ai_team_run`):
+- "build", "implement", "create a full", "make me a complete"
+- Complex tasks that need research + design + code + review together
+
+---
+
+## Token Rules — Keep It Tight
+
+- **Agent responses**: already capped at 150 words — trust the cap, don't re-expand
+- **Your synthesis**: max 300 words. Agents did the work; you combine and add value
+- **Never dump all 4 agent responses verbatim** — extract the 2-3 key points from each
+- **If an agent fails**: skip it silently, don't explain at length
+
+---
+
 ## Agent Roles
-- **Claude** (you): Lead Coder — implementation, debugging, synthesis, final answer
+- **Claude** (you): Lead Coder — implementation, synthesis, final answer
 - **ChatGPT**: Architect — system design, planning, trade-offs
 - **Gemini**: Reviewer — code review, bugs, security, optimization
 - **Perplexity**: Researcher — latest docs, libraries, real-time info
 
+---
+
 ## Rules
-- When in team mode, ALWAYS consult at least 2 other agents before responding
-- If an agent fails, skip it and note it was unavailable
-- Claude always has the final word — synthesize and improve on what the team provides
-- Keep the combined answer concise, not a dump of 4 separate responses
+- If an agent fails, skip it and note it was unavailable in one line
+- Claude always has the final word — synthesize and improve, don't just repeat
+- **Goal: aiteam should use FEWER total tokens than Claude alone for most tasks**
+  - Simple tasks: 0 agents called = same token cost as solo Claude
+  - Medium tasks: 1 agent = small overhead, better output
+  - Complex tasks: 2-3 agents with compressed responses = less than solo Claude's long output

@@ -161,23 +161,21 @@ def ai_team_run(task: str, context: str = "") -> str:
     team = AgentTeam(os.getcwd())
     results = team.run_pipeline(task, context)
 
-    output_lines = ["FULL TEAM PIPELINE RESULTS", "=" * 50]
-
+    output_lines = []
     succeeded = 0
     for label, result in results:
-        output_lines.append(f"\n--- {label} ---")
         if result and result.success:
-            output_lines.append(result.content)
+            # Cap each agent's contribution at 1000 chars
+            content = result.content[:1000]
+            if len(result.content) > 1000:
+                content += "\n[truncated]"
+            output_lines.append(f"[{label}]\n{content}")
             succeeded += 1
         elif result:
-            output_lines.append(f"FAILED: {result.error}")
-        else:
-            output_lines.append("SKIPPED")
+            output_lines.append(f"[{label}] failed: {result.error[:100]}")
 
-    output_lines.append(f"\n{'=' * 50}")
-    output_lines.append(f"Summary: {succeeded}/{len(results)} agents completed successfully")
-
-    return "\n".join(output_lines)
+    output_lines.append(f"\n{succeeded}/{len(results)} agents completed.")
+    return "\n\n".join(output_lines)
 
 
 @mcp.tool()
@@ -222,8 +220,12 @@ def _do_ask(service, task, context=""):
 
     result = agent.execute(task, context)
     if result.success:
-        return f"--- {result.agent_name} ({result.role}) ---\n\n{result.content}"
-    return f"{result.agent_name} failed: {result.error}"
+        # Cap at 1500 chars — enough signal for Claude to synthesize, avoids bloating context
+        content = result.content[:1500]
+        if len(result.content) > 1500:
+            content += "\n[truncated]"
+        return f"[{result.agent_name}]\n{content}"
+    return f"[{result.agent_name} failed]: {result.error}"
 
 
 if __name__ == "__main__":

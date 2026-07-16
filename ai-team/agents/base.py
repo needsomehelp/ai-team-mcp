@@ -30,7 +30,7 @@ class BaseAgent(ABC):
         parts = [
             f"You are the {self.role} on a software team.",
             role_instruction,
-            "FORMAT: bullet points only, max 200 words, no preamble, no filler.",
+            "FORMAT: bullet points only, max 150 words, no preamble, no filler, no repetition.",
         ]
         if context:
             # Cap context at 800 chars — just enough for agents to understand the project
