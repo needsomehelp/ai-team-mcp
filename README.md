@@ -121,7 +121,7 @@ Each AI uses **your own subscription**. No middleman, no extra costs, no API pro
 | Service | Auth Method | Cost |
 |---------|------------|------|
 | ChatGPT | Browser session token | Free (uses your Plus/Pro sub) |
-| Gemini | API key | Free (Google AI Studio) |
+| Gemini | API key OR browser cookies | Free (API key or Advanced sub) |
 | Perplexity | API key or browser cookies | Free with Pro / ~$0.001 per query via API |
 | Claude | CLI login | Free (uses your Claude Code sub) |
 
@@ -164,7 +164,11 @@ python3 aiteam.py login chatgpt
 
 ### Gemini Setup
 
-> **Free!** Google gives you 500 requests/day on Gemini Flash, 25/day on Pro.
+Two options — use whichever you prefer:
+
+#### Option A: API Key (Free - Recommended)
+
+> Google gives you 500 requests/day on Gemini Flash, 25/day on Pro. No credit card needed.
 
 **Step 1:** Go to [Google AI Studio](https://aistudio.google.com/apikey)
 
@@ -182,6 +186,31 @@ python3 aiteam.py login gemini
 ```
 
 > **Multiple Google accounts?** Make sure you're signed into the correct account before creating the key.
+
+#### Option B: Browser Cookies (Uses your Gemini Advanced subscription)
+
+> Use your existing Gemini Advanced subscription — same as what you get in the browser.
+
+**Step 1:** Log into [gemini.google.com](https://gemini.google.com) in your browser
+
+**Step 2:** Open DevTools:
+- **Mac:** `Cmd + Option + I`
+- **Windows/Linux:** `F12`
+
+**Step 3:** Go to the **Network** tab
+
+**Step 4:** Click on any request to `gemini.google.com`
+
+**Step 5:** In the request headers, find **Cookie** and copy the entire value
+
+**Step 6:** Save it:
+
+```bash
+python3 aiteam.py login gemini
+# Paste the cookie string when prompted
+```
+
+> Cookies expire when you log out or after some time. Re-export if Gemini stops working.
 
 ---
 
@@ -398,8 +427,8 @@ aiteam code "Implement WebSocket real-time notifications"
 |---------|-------|-----|
 | ChatGPT returns "Unauthorized" | Token expired or not logged in | Log into chatgpt.com, get a fresh token from `/api/auth/session` |
 | ChatGPT returns empty response | Wrong token copied | Copy only the `accessToken` value, not the full JSON |
-| Gemini returns 403 | Invalid or disabled API key | Generate a new key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| Gemini quota exceeded | Free tier limit reached | Wait 24 hours for reset, or upgrade |
+| Gemini returns 403 | Invalid API key or expired cookies | Re-generate API key or re-export browser cookies |
+| Gemini quota exceeded | Free tier limit reached | Wait 24 hours for reset, or switch to browser cookies (Advanced sub) |
 | Perplexity returns 401 | Invalid API key or expired cookies | Re-generate API key or re-export cookies |
 | Claude MCP not found | Wrong path in `claude mcp add` | Run `claude mcp list` to check, re-add with correct absolute path |
 | `ModuleNotFoundError` | Missing dependencies | Run `pip install -r requirements.txt` |

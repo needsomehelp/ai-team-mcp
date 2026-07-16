@@ -53,7 +53,8 @@ def ai_team_status() -> str:
         lines.append("")
         lines.append("To log in, use the ai_team_login tool with:")
         lines.append("  ChatGPT:    go to https://chatgpt.com/api/auth/session, copy accessToken")
-        lines.append("  Gemini:     get free API key at https://aistudio.google.com/apikey")
+        lines.append("  Gemini:     Option A: free API key at https://aistudio.google.com/apikey")
+        lines.append("              Option B: browser cookies from gemini.google.com (Advanced sub)")
         lines.append("  Perplexity: browser DevTools → Network → right-click request → Copy as cURL → paste Cookie header value")
 
     return "\n".join(lines)
@@ -63,14 +64,42 @@ def ai_team_status() -> str:
 def ai_team_login(service: str, token: str, token2: str = "") -> str:
     """Save login token for an AI service. Services: chatgpt, gemini, perplexity.
     For ChatGPT: go to https://chatgpt.com/api/auth/session and copy the accessToken value.
-    For Gemini: get free API key at https://aistudio.google.com/apikey.
+    For Gemini: Option A (API key): get free key at https://aistudio.google.com/apikey. Option B (browser cookies): copy cookies from gemini.google.com via DevTools.
     For Perplexity: browser DevTools → Network → click any perplexity.ai request → copy the Cookie header value as token. Or paste all cookies as JSON dict."""
     if service == "chatgpt":
         save_session("chatgpt", {"access_token": token})
         return "ChatGPT logged in successfully! You can now use ask_chatgpt."
     elif service == "gemini":
-        save_session("gemini", {"api_key": token, "model": "gemini-2.5-flash"})
-        return "Gemini logged in successfully! You can now use ask_gemini."
+        # Check if it's an API key (starts with AIza) or browser cookies
+        if token.startswith("AIza"):
+            save_session("gemini", {"api_key": token, "model": "gemini-2.5-flash"})
+            return "Gemini logged in with API key! You can now use ask_gemini."
+        else:
+            # Try as JSON cookies dict
+            import json as _json
+            try:
+                cookies = _json.loads(token)
+                if isinstance(cookies, dict):
+                    # Merge: keep API key if already set, add cookies
+                    existing = get_session("gemini")
+                    existing["cookies"] = cookies
+                    save_session("gemini", existing)
+                    return (f"Gemini logged in with {len(cookies)} browser cookies! Using your Advanced subscription.\n"
+                            "You can now use ask_gemini.")
+            except (ValueError, TypeError):
+                pass
+            # Try as cookie header string (name1=val1; name2=val2)
+            if "=" in token and ";" in token:
+                from agents.gemini_agent import parse_cookie_string
+                cookies = parse_cookie_string(token)
+                existing = get_session("gemini")
+                existing["cookies"] = cookies
+                save_session("gemini", existing)
+                return (f"Gemini logged in with {len(cookies)} browser cookies! Using your Advanced subscription.\n"
+                        "You can now use ask_gemini.")
+            # Assume it's an API key even without AIza prefix
+            save_session("gemini", {"api_key": token, "model": "gemini-2.5-flash"})
+            return "Gemini logged in with API key! You can now use ask_gemini."
     elif service == "perplexity":
         if token.startswith("pplx-"):
             # Official API key
