@@ -189,17 +189,44 @@ def _dalle3(prompt: str, size: str = "1024x1024", quality: str = "standard") -> 
 
 
 @mcp.tool()
-def ask_chatgpt(task: str, context: str = "", size: str = "1024x1024", quality: str = "standard") -> str:
-    """Send a task to ChatGPT. For image generation, uses DALL-E 3 (same model ChatGPT uses
-    in the browser). Requires OpenAI API key for images: ai_team_login(service='openai', token='sk-...')
-    Args:
-        task:    Your request — text task or image description
-        context: Optional project context
-        size:    For images — '1024x1024', '1792x1024', '1024x1792' (default: '1024x1024')
-        quality: For images — 'standard' or 'hd' (default: 'standard')
+def ask_chatgpt(task: str, context: str = "") -> str:
+    """Send a task to ChatGPT (using your Plus/Pro subscription).
+    Best for: architecture, planning, reasoning, AND image generation.
+    For images: ChatGPT generates via DALL-E, we fetch the CDN URL, Claude displays it.
+    No API key needed — uses your existing ChatGPT Plus session token.
     """
     if _is_image_request(task):
-        return _dalle3(task, size=size, quality=quality)
+        agent = ChatGPTWebAgent()
+        if not agent.is_ready():
+            return "ChatGPT not logged in. Use ai_team_login(service='chatgpt', token='...')"
+
+        result = agent.generate_image(task)
+
+        if result.success and "Image URL:" in result.content:
+            # Got a real URL from ChatGPT/DALL-E — tell Claude to fetch it
+            return (
+                f"{result.content}\n\n"
+                "Claude: fetch the Image URL above and display it to the user."
+            )
+
+        # ChatGPT didn't generate — fall back to DALL-E API if key exists, else Pollinations
+        dalle_result = _dalle3(task)
+        if "Image URL:" in dalle_result:
+            return dalle_result
+
+        # Final fallback: Pollinations (free, no key)
+        import urllib.parse
+        import requests as _req
+        encoded = urllib.parse.quote(task)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true&enhance=true"
+        try:
+            r = _req.head(url, timeout=45, allow_redirects=True)
+            if r.status_code == 200:
+                return f"Image URL: {url}\n\nClaude: fetch this URL and display the image."
+        except Exception:
+            pass
+        return f"Image URL: {url}\n\nClaude: fetch this URL and display the image."
+
     return _do_ask("chatgpt", task, context)
 
 

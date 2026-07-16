@@ -96,6 +96,68 @@ class ChatGPTWebAgent(BaseAgent):
 
         return full_text.strip(), image_urls
 
+    def _send_conversation(self, prompt: str, model: str = "auto") -> requests.Response:
+        """Send a message to ChatGPT and return the streaming response."""
+        payload = {
+            "action": "next",
+            "messages": [{
+                "id": str(uuid.uuid4()),
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [prompt]},
+            }],
+            "parent_message_id": str(uuid.uuid4()),
+            "model": model,
+            "timezone_offset_min": -330,
+            "history_and_training_disabled": False,
+            "conversation_mode": {"kind": "primary_assistant"},
+        }
+        return requests.post(
+            f"{self.BASE_URL}/conversation",
+            headers=self._headers(),
+            json=payload,
+            stream=True,
+            timeout=180,
+        )
+
+    def generate_image(self, prompt: str) -> AgentResult:
+        """Ask ChatGPT (GPT-4o + DALL-E) to generate an image and return the CDN URL."""
+        if not self.is_ready():
+            return AgentResult(self.name, self.role, "", False,
+                             "ChatGPT not logged in. Run: python3 aiteam.py login chatgpt")
+
+        # Use gpt-4o explicitly — "auto" may not trigger DALL-E
+        # Phrase the request so GPT-4o routes to DALL-E
+        image_prompt = f"Please generate an image: {prompt}"
+
+        try:
+            response = self._send_conversation(image_prompt, model="gpt-4o")
+
+            if response.status_code in (401, 403):
+                return AgentResult(self.name, self.role, "", False,
+                                 "Session expired. Run: python3 aiteam.py login chatgpt")
+            response.raise_for_status()
+
+            text, image_urls = self._parse_sse_stream(response)
+
+            if image_urls:
+                url_block = "\n".join(f"Image URL: {u}" for u in image_urls)
+                combined = f"{text}\n\n{url_block}".strip() if text else url_block
+                return AgentResult(self.name, self.role, combined, True)
+
+            # GPT-4o responded with text only (didn't trigger DALL-E)
+            # Return the text so caller knows what happened
+            if text:
+                return AgentResult(self.name, self.role, text, False,
+                                 "ChatGPT responded with text instead of generating an image.")
+
+            return AgentResult(self.name, self.role, "", False,
+                             "ChatGPT did not generate an image. It may need DALL-E access.")
+
+        except requests.exceptions.Timeout:
+            return AgentResult(self.name, self.role, "", False, "ChatGPT request timed out")
+        except Exception as e:
+            return AgentResult(self.name, self.role, "", False, str(e))
+
     def execute(self, prompt: str, context: str = "") -> AgentResult:
         if not self.is_ready():
             return AgentResult(self.name, self.role, "", False,
@@ -106,31 +168,8 @@ class ChatGPTWebAgent(BaseAgent):
             "Design clean architecture. Plan file structure, data flow, and interfaces. Think step by step."
         )
 
-        message_id = str(uuid.uuid4())
-        parent_id = str(uuid.uuid4())
-
-        payload = {
-            "action": "next",
-            "messages": [{
-                "id": message_id,
-                "author": {"role": "user"},
-                "content": {"content_type": "text", "parts": [full_prompt]},
-            }],
-            "parent_message_id": parent_id,
-            "model": "auto",
-            "timezone_offset_min": -330,
-            "history_and_training_disabled": False,
-            "conversation_mode": {"kind": "primary_assistant"},
-        }
-
         try:
-            response = requests.post(
-                f"{self.BASE_URL}/conversation",
-                headers=self._headers(),
-                json=payload,
-                stream=True,
-                timeout=180,
-            )
+            response = self._send_conversation(full_prompt)
 
             if response.status_code in (401, 403):
                 return AgentResult(self.name, self.role, "", False,
