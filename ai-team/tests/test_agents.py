@@ -169,6 +169,62 @@ class TestChatGPTAgent:
         assert result.success is False
         assert "timed out" in result.error.lower()
 
+    @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
+    @patch("requests.get")
+    @patch("requests.post")
+    def test_execute_image_generation(self, mock_post, mock_get, mock_session):
+        """ChatGPT returns image_asset_pointer — agent resolves it to a download URL."""
+        from agents.chatgpt_agent import ChatGPTWebAgent
+
+        sse_lines = [
+            'data: {"message": {"author": {"role": "assistant"}, "content": {"parts": [{"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-abc123"}]}}}',
+            'data: [DONE]',
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_lines.return_value = sse_lines
+        mock_post.return_value = mock_response
+
+        # Mock the file download URL fetch
+        mock_dl_response = MagicMock()
+        mock_dl_response.status_code = 200
+        mock_dl_response.json.return_value = {"download_url": "https://files.oaistatic.com/img.png"}
+        mock_get.return_value = mock_dl_response
+
+        agent = ChatGPTWebAgent()
+        result = agent.execute("generate an image of a cat")
+        assert result.success is True
+        assert "https://files.oaistatic.com/img.png" in result.content
+
+    @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
+    @patch("requests.get")
+    @patch("requests.post")
+    def test_execute_image_and_text(self, mock_post, mock_get, mock_session):
+        """ChatGPT returns both text and an image — both appear in result."""
+        from agents.chatgpt_agent import ChatGPTWebAgent
+
+        sse_lines = [
+            'data: {"message": {"author": {"role": "assistant"}, "content": {"parts": ["Here is your image:", {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-xyz"}]}}}',
+            'data: [DONE]',
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_lines.return_value = sse_lines
+        mock_post.return_value = mock_response
+
+        mock_dl_response = MagicMock()
+        mock_dl_response.status_code = 200
+        mock_dl_response.json.return_value = {"download_url": "https://files.oaistatic.com/cat.png"}
+        mock_get.return_value = mock_dl_response
+
+        agent = ChatGPTWebAgent()
+        result = agent.execute("draw a cat")
+        assert result.success is True
+        assert "Here is your image:" in result.content
+        assert "https://files.oaistatic.com/cat.png" in result.content
+
 
 # ── Gemini Agent ─────────────────────────────────────────────
 
