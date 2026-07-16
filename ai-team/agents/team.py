@@ -142,11 +142,12 @@ class AgentTeam:
                 if role in parallel_tasks:
                     pipeline_results.append((label, parallel_results.get(role)))
 
-        # Build enriched context — cap each agent's contribution at 800 chars to save tokens
+        # Build enriched context — cap each agent's contribution at 2500 chars
+        # (enough to convey full architecture/research without bloat)
         enriched = context
         for _, result in pipeline_results:
             if result and result.success:
-                enriched += f"\n\n[{result.agent_name}]: {result.content[:800]}"
+                enriched += f"\n\n[{result.agent_name}]: {result.content[:2500]}"
 
         # Step 2: Claude codes (only if routed)
         code_result = None
@@ -156,10 +157,10 @@ class AgentTeam:
 
         # Step 3: Gemini reviews (only if routed + code exists)
         if "reviewer" in roles and code_result and code_result.success:
-            # Only send the code, not the full enriched context — Gemini only needs to review
+            # Send full code to Gemini — truncating code means missing bugs
             review_result = self.run_single(
                 "reviewer",
-                f"Review for bugs and security issues:\n{code_result.content[:2000]}",
+                f"Review for bugs, security issues, and edge cases:\n{code_result.content[:6000]}",
                 "",
             )
             pipeline_results.append(("review [Gemini]", review_result))

@@ -165,9 +165,9 @@ def ai_team_run(task: str, context: str = "") -> str:
     succeeded = 0
     for label, result in results:
         if result and result.success:
-            # Cap each agent's contribution at 1000 chars
-            content = result.content[:1000]
-            if len(result.content) > 1000:
+            # Cap each agent at 3000 chars in pipeline output
+            content = result.content[:3000]
+            if len(result.content) > 3000:
                 content += "\n[truncated]"
             output_lines.append(f"[{label}]\n{content}")
             succeeded += 1
@@ -220,10 +220,10 @@ def _do_ask(service, task, context=""):
 
     result = agent.execute(task, context)
     if result.success:
-        # Cap at 1500 chars — enough signal for Claude to synthesize, avoids bloating context
-        content = result.content[:1500]
-        if len(result.content) > 1500:
-            content += "\n[truncated]"
+        # Cap at 4000 chars — preserves full code reviews and research without unbounded bloat
+        content = result.content[:4000]
+        if len(result.content) > 4000:
+            content += "\n[truncated — ask for more if needed]"
         return f"[{result.agent_name}]\n{content}"
     return f"[{result.agent_name} failed]: {result.error}"
 
