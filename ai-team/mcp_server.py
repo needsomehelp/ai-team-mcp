@@ -149,40 +149,57 @@ def _is_image_request(task: str) -> bool:
     return any(kw in t for kw in _IMAGE_KEYWORDS)
 
 
-@mcp.tool()
-def ask_chatgpt(task: str, context: str = "") -> str:
-    """Send a task to ChatGPT (using your Plus/Pro subscription). Best for: architecture design,
-    system planning, complex reasoning, AND image generation (auto-fallback to DALL-E if needed).
-    Image requests are tried via ChatGPT first, then auto-fallback to working generation."""
-    # For image requests: try ChatGPT, auto-fallback to Pollinations if it refuses
-    if _is_image_request(task):
-        result = _do_ask("chatgpt", task, context)
-        # If ChatGPT returned a working image URL, pass it through
-        if "http" in result and ("Image URL" in result or "files.oai" in result or "pollination" in result):
-            return result
-        # ChatGPT refused or gave text-only response — auto-generate via Pollinations
-        import urllib.parse
-        import requests as _req
-        encoded = urllib.parse.quote(task)
-        url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true&enhance=true"
-        try:
-            r = _req.head(url, timeout=45, allow_redirects=True)
-            status = r.status_code
-        except Exception:
-            status = 0
-        chatgpt_note = f"[ChatGPT response: {result[:200]}]\n\n" if result and "[ChatGPT" not in result else ""
-        if status == 200:
-            return (
-                f"{chatgpt_note}"
-                f"Image generated (Flux/Pollinations):\n\n"
-                f"URL: {url}\n\n"
-                f"Open in browser to view. Right-click → Save to download."
-            )
+def _dalle3(prompt: str, size: str = "1024x1024", quality: str = "standard") -> str:
+    """Call DALL-E 3 via OpenAI API — the same model ChatGPT uses internally."""
+    import requests as _req
+
+    session = get_session("openai")
+    api_key = session.get("api_key", "")
+    if not api_key:
         return (
-            f"{chatgpt_note}"
-            f"Image URL (loads on first open):\n\n"
-            f"{url}"
+            "DALL-E 3 needs an OpenAI API key (this is what ChatGPT uses for images internally).\n\n"
+            "Get one free at: https://platform.openai.com/api-keys\n"
+            "Then run: ai_team_login(service='openai', token='sk-...')\n\n"
+            "After that, all image requests via ask_chatgpt will use DALL-E 3 directly."
         )
+    try:
+        resp = _req.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": size, "quality": quality},
+            timeout=120,
+        )
+        if resp.status_code in (401, 403):
+            return "Invalid OpenAI API key. Update with: ai_team_login(service='openai', token='sk-...')"
+        if resp.status_code == 400:
+            err = resp.json().get("error", {}).get("message", "Bad request")
+            return f"DALL-E 3 rejected the prompt: {err}"
+        resp.raise_for_status()
+        data = resp.json()
+        url = data["data"][0]["url"]
+        revised = data["data"][0].get("revised_prompt", "")
+        note = f"\nRevised prompt: {revised}" if revised and revised != prompt else ""
+        return (
+            f"[DALL-E 3 via ChatGPT/OpenAI]\n\n"
+            f"Image URL: {url}{note}\n\n"
+            f"Note: URL expires in 1 hour — open now or download to keep."
+        )
+    except Exception as e:
+        return f"DALL-E 3 error: {e}"
+
+
+@mcp.tool()
+def ask_chatgpt(task: str, context: str = "", size: str = "1024x1024", quality: str = "standard") -> str:
+    """Send a task to ChatGPT. For image generation, uses DALL-E 3 (same model ChatGPT uses
+    in the browser). Requires OpenAI API key for images: ai_team_login(service='openai', token='sk-...')
+    Args:
+        task:    Your request — text task or image description
+        context: Optional project context
+        size:    For images — '1024x1024', '1792x1024', '1024x1792' (default: '1024x1024')
+        quality: For images — 'standard' or 'hd' (default: 'standard')
+    """
+    if _is_image_request(task):
+        return _dalle3(task, size=size, quality=quality)
     return _do_ask("chatgpt", task, context)
 
 
@@ -268,46 +285,16 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: st
 
 @mcp.tool()
 def generate_image_dalle(prompt: str, size: str = "1024x1024", quality: str = "standard") -> str:
-    """Generate an image with DALL-E 3 via OpenAI API (requires OpenAI API key).
-    Higher quality than Pollinations but needs sk-... API key saved via ai_team_login.
-    To set up: Use ai_team_login with service='openai', token='sk-your-key-here'
+    """Generate an image with DALL-E 3 — the same model ChatGPT uses in the browser.
+    Requires OpenAI API key: ai_team_login(service='openai', token='sk-...')
     Args:
         prompt:  Description of the image
         size:    '1024x1024', '1792x1024', or '1024x1792'
         quality: 'standard' or 'hd'
     """
-    import requests as _req
+    return _dalle3(prompt, size=size, quality=quality)
 
-    session = get_session("openai")
-    api_key = session.get("api_key", "")
-    if not api_key:
-        return (
-            "OpenAI API key not set. Run:\n"
-            "  ai_team_login(service='openai', token='sk-your-key')\n\n"
-            "Alternatively use generate_image (free, no key needed)."
-        )
 
-    try:
-        resp = _req.post(
-            "https://api.openai.com/v1/images/generations",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": size, "quality": quality},
-            timeout=120,
-        )
-        if resp.status_code in (401, 403):
-            return "Invalid OpenAI API key. Update with ai_team_login(service='openai', token='sk-...')"
-        resp.raise_for_status()
-        data = resp.json()
-        image_url = data["data"][0]["url"]
-        revised = data["data"][0].get("revised_prompt", prompt)
-        return (
-            f"DALL-E 3 image generated!\n\n"
-            f"URL: {image_url}\n\n"
-            f"Revised prompt: {revised}\n"
-            f"Note: URL expires in 1 hour — download to keep it."
-        )
-    except Exception as e:
-        return f"DALL-E 3 failed: {e}"
 
 
 @mcp.tool()
