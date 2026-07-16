@@ -270,43 +270,57 @@ def ai_team_run(task: str, context: str = "") -> str:
 
 @mcp.tool()
 def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: str = "flux") -> str:
-    """Generate an image and return a working URL. Uses Pollinations.ai (free, no API key).
-    ChatGPT and Gemini CANNOT do this — they only return text through the MCP bridge.
+    """Generate an image using ChatGPT/DALL-E (primary) with Pollinations as fallback.
+    Priority: 1) ChatGPT DALL-E (your Plus subscription, no API key needed)
+              2) Pollinations/Flux (free, always works)
     Args:
         prompt: Description of the image (be detailed for best results)
         width:  Image width in pixels (default 1024)
         height: Image height in pixels (default 1024)
-        model:  Model to use — 'flux' (best quality, default), 'turbo' (fastest), 'flux-realism'
+        model:  Fallback model — 'flux' (default), 'turbo', 'flux-realism'
     """
     import urllib.parse
     import requests as _req
 
+    # Step 1: Try ChatGPT/DALL-E first (uses your Plus subscription)
+    agent = ChatGPTWebAgent()
+    if agent.is_ready():
+        result = agent.generate_image(prompt)
+        if result.success and "Image URL:" in result.content:
+            return (
+                f"[ChatGPT/DALL-E]\n\n"
+                f"{result.content}\n\n"
+                f"Claude: read the saved file path above and display the image to the user."
+            )
+
+    # Step 2: Fallback to Pollinations (free, no key needed)
     encoded = urllib.parse.quote(prompt)
     url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?model={model}&width={width}&height={height}&nologo=true&enhance=true"
     )
-
-    # Verify the image is reachable (Pollinations generates on first request)
     try:
-        r = _req.head(url, timeout=45, allow_redirects=True)
+        r = _req.get(url, timeout=60, stream=True)
         if r.status_code == 200:
+            import tempfile
+            ext = "png" if "png" in r.headers.get("content-type", "") else "jpg"
+            tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
+            for chunk in r.iter_content(8192):
+                tmp.write(chunk)
+            tmp.close()
             return (
-                f"Image generated successfully!\n\n"
-                f"URL: {url}\n\n"
-                f"Prompt: {prompt}\n"
-                f"Model: {model} | Size: {width}x{height}\n\n"
-                f"Open the URL in a browser to view or right-click to save."
+                f"[Pollinations/{model}]\n\n"
+                f"URL: {url}\n"
+                f"Saved to: {tmp.name}\n\n"
+                f"Claude: read {tmp.name} and display the image to the user."
             )
     except Exception:
         pass
 
-    # Return URL anyway — Pollinations generates lazily on first GET
     return (
-        f"Image URL (opens/generates on first load):\n\n"
-        f"{url}\n\n"
-        f"Prompt: {prompt}\n"
-        f"Model: {model} | Size: {width}x{height}"
+        f"[Pollinations/{model}]\n\n"
+        f"URL: {url}\n\n"
+        f"Claude: fetch this URL and display the image to the user."
     )
 
 
