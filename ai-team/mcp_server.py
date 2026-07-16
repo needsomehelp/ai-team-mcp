@@ -134,9 +134,34 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
     return f"Unknown service: {service}. Use: chatgpt, gemini, or perplexity"
 
 
+_MEDIA_KEYWORDS = (
+    "generate image", "create image", "make image", "draw", "render image",
+    "generate video", "create video", "make video", "generate audio",
+    "create audio", "make audio", "text to image", "text to video",
+    "image of", "picture of", "photo of", "illustration of",
+)
+
+
+def _is_media_request(task: str) -> bool:
+    t = task.lower()
+    return any(kw in t for kw in _MEDIA_KEYWORDS)
+
+
 @mcp.tool()
 def ask_chatgpt(task: str, context: str = "") -> str:
-    """Send a task to ChatGPT (using your Plus/Pro subscription). Best for: architecture design, system planning, complex reasoning."""
+    """Send a task to ChatGPT (using your Plus/Pro subscription). Best for: architecture design, system planning, complex reasoning.
+    NOTE: ChatGPT cannot return images/video/audio through the MCP bridge — use generate_image / generate_video tools instead."""
+    if _is_media_request(task):
+        return (
+            "[ChatGPT] Cannot return media via MCP bridge.\n\n"
+            "ChatGPT can describe or plan an image but cannot deliver the actual file "
+            "through this text-only connection.\n\n"
+            "Use these tools instead:\n"
+            "- generate_image: create an image (Higgsfield, returns URL)\n"
+            "- generate_video: create a video (Higgsfield, returns URL)\n"
+            "- generate_audio: create audio (Higgsfield, returns URL)\n\n"
+            f"Original request: {task}"
+        )
     return _do_ask("chatgpt", task, context)
 
 
@@ -176,6 +201,58 @@ def ai_team_run(task: str, context: str = "") -> str:
 
     output_lines.append(f"\n{succeeded}/{len(results)} agents completed.")
     return "\n\n".join(output_lines)
+
+
+@mcp.tool()
+def generate_image(prompt: str, model: str = "", aspect_ratio: str = "1:1") -> str:
+    """Generate an image using Higgsfield AI. Returns a URL to the generated image.
+    Works where ChatGPT/Gemini cannot — the MCP bridge is image-capable here.
+    Args:
+        prompt: Description of the image to generate
+        model: Optional model name (leave empty for default)
+        aspect_ratio: Image ratio e.g. '1:1', '16:9', '9:16' (default: '1:1')
+    """
+    return (
+        "[generate_image] This tool signals Claude to call the Higgsfield MCP generate_image tool directly.\n\n"
+        f"Prompt: {prompt}\n"
+        f"Aspect ratio: {aspect_ratio}\n"
+        f"Model: {model or 'default'}\n\n"
+        "Claude: call mcp__claude_ai_Higgsfield__generate_image with this prompt and return the image URL to the user."
+    )
+
+
+@mcp.tool()
+def generate_video(prompt: str, model: str = "", duration: int = 4) -> str:
+    """Generate a video using Higgsfield AI. Returns a URL to the generated video.
+    Works where ChatGPT/Gemini cannot — the MCP bridge is video-capable here.
+    Args:
+        prompt: Description of the video to generate
+        model: Optional model name (leave empty for default)
+        duration: Video length in seconds (default: 4)
+    """
+    return (
+        "[generate_video] This tool signals Claude to call the Higgsfield MCP generate_video tool directly.\n\n"
+        f"Prompt: {prompt}\n"
+        f"Duration: {duration}s\n"
+        f"Model: {model or 'default'}\n\n"
+        "Claude: call mcp__claude_ai_Higgsfield__generate_video with this prompt and return the video URL to the user."
+    )
+
+
+@mcp.tool()
+def generate_audio(prompt: str, duration: int = 10) -> str:
+    """Generate audio using Higgsfield AI. Returns a URL to the generated audio.
+    Works where ChatGPT/Gemini cannot — the MCP bridge is audio-capable here.
+    Args:
+        prompt: Description of the audio/music to generate
+        duration: Length in seconds (default: 10)
+    """
+    return (
+        "[generate_audio] This tool signals Claude to call the Higgsfield MCP generate_audio tool directly.\n\n"
+        f"Prompt: {prompt}\n"
+        f"Duration: {duration}s\n\n"
+        "Claude: call mcp__claude_ai_Higgsfield__generate_audio with this prompt and return the audio URL to the user."
+    )
 
 
 @mcp.tool()

@@ -38,6 +38,14 @@ When the user says **"aiteam status"**:
 - "design", "architect", "structure", "what's the best approach to build X"
 - Planning and system design questions before writing code
 
+### Image / Video / Audio generation — NEVER use ask_chatgpt/ask_gemini:
+- ChatGPT and Gemini return TEXT ONLY through the MCP bridge — images never arrive
+- For images: call `generate_image` tool (routes to Higgsfield, returns real URL)
+- For videos: call `generate_video` tool (routes to Higgsfield, returns real URL)
+- For audio: call `generate_audio` tool (routes to Higgsfield, returns real URL)
+- Keywords: "generate image", "create image", "draw", "render", "make a photo",
+  "generate video", "make a video", "generate audio", "create music"
+
 ### Call ALL agents (full pipeline via `ai_team_run`):
 - "build", "implement", "create a full", "make me a complete"
 - Complex tasks that need research + design + code + review together
