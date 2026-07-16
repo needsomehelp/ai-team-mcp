@@ -1,0 +1,39 @@
+{
+  "agents": {
+    "claude": {
+      "enabled": true,
+      "role": "lead_coder",
+      "method": "cli",
+      "description": "Lead coder - writes and fixes code (Claude Code CLI, your subscription)"
+    },
+    "gemini": {
+      "enabled": true,
+      "role": "reviewer",
+      "method": "browser",
+      "url": "https://gemini.google.com",
+      "description": "Code reviewer - finds bugs, suggests improvements (your Gemini Advanced subscription)"
+    },
+    "chatgpt": {
+      "enabled": true,
+      "role": "architect",
+      "method": "browser",
+      "url": "https://chatgpt.com",
+      "description": "Architect - plans structure, designs systems (your ChatGPT Plus subscription)"
+    },
+    "perplexity": {
+      "enabled": true,
+      "role": "researcher",
+      "method": "browser",
+      "url": "https://perplexity.ai",
+      "description": "Researcher - finds docs, examples, best practices (your Perplexity Pro subscription)"
+    }
+  },
+  "browser": {
+    "session_dir": "./sessions",
+    "headless": false,
+    "timeout": 120
+  },
+  "workspace": {
+    "use_worktrees": true
+  }
+}
