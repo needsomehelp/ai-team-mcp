@@ -7,7 +7,6 @@ How it works:
 """
 
 import json
-import time
 import requests
 from .base import BaseAgent, AgentResult
 from .session_store import get_session

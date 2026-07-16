@@ -21,7 +21,6 @@ Method B - JSON dict:
 4. Use ai_team_login with service='perplexity', token='<paste JSON>'
 """
 
-import json
 from .base import BaseAgent, AgentResult
 from .session_store import get_session
 

@@ -5,12 +5,10 @@ and response parsing WITHOUT making real API calls. External calls are
 mocked so tests run fast and offline.
 """
 
-import json
-import pytest
 from unittest.mock import patch, MagicMock
 
 from agents.base import BaseAgent, AgentResult
-from agents.session_store import load_sessions, save_session, get_session, remove_session
+from agents.session_store import save_session, get_session, remove_session
 from agents.gemini_agent import parse_cookie_string
 
 

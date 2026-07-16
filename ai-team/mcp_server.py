@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
 
-from agents.session_store import save_session, get_session, list_sessions
+from agents.session_store import save_session, get_session
 from agents.claude_agent import ClaudeAgent
 from agents.chatgpt_agent import ChatGPTWebAgent
 from agents.gemini_agent import GeminiWebAgent

@@ -29,7 +29,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents.team import AgentTeam
-from agents.session_store import save_session, get_session, list_sessions
+from agents.session_store import save_session
 
 
 # ── Colors ──
@@ -115,7 +115,7 @@ def cmd_login(service: str):
   Step 5b: Go to {C.CYAN}https://chatgpt.com/api/auth/session{C.RESET}
            Copy the {C.BOLD}accessToken{C.RESET} value from the JSON
 """)
-        token = input(f"  Paste your access token here: ").strip()
+        token = input("  Paste your access token here: ").strip()
         if token:
             save_session("chatgpt", {"access_token": token})
             print(f"\n  {C.GREEN}ChatGPT logged in successfully!{C.RESET}")
@@ -137,7 +137,7 @@ def cmd_login(service: str):
   {C.GREEN}This is FREE — 500 requests/day for Gemini Flash, 25/day for Pro{C.RESET}
   {C.DIM}Same models as your Gemini Advanced subscription{C.RESET}
 """)
-        api_key = input(f"  Paste your API key: ").strip()
+        api_key = input("  Paste your API key: ").strip()
         if api_key:
             save_session("gemini", {"api_key": api_key, "model": "gemini-2.5-flash"})
             print(f"\n  {C.GREEN}Gemini logged in successfully!{C.RESET}")
@@ -157,7 +157,7 @@ def cmd_login(service: str):
   {C.GREEN}Pricing: ~$0.001 per query (sonar) = $1 for 1000 searches{C.RESET}
   {C.DIM}Much cheaper than any subscription, and it always works{C.RESET}
 """)
-        api_key = input(f"  Paste your API key: ").strip()
+        api_key = input("  Paste your API key: ").strip()
         if api_key:
             save_session("perplexity", {"api_key": api_key, "model": "sonar"})
             print(f"\n  {C.GREEN}Perplexity logged in successfully!{C.RESET}")
@@ -166,7 +166,7 @@ def cmd_login(service: str):
         return
 
     print(f"  {C.RED}Unknown service: {service}{C.RESET}")
-    print(f"  Available: chatgpt, gemini, perplexity, claude")
+    print("  Available: chatgpt, gemini, perplexity, claude")
 
 
 # ── STATUS ──
@@ -189,7 +189,7 @@ def cmd_status(team: AgentTeam):
             if s != "claude":
                 print(f"    python3 aiteam.py login {s}")
             else:
-                print(f"    claude login")
+                print("    claude login")
     else:
         print(f"  {C.GREEN}{C.BOLD}All agents ready! Run: python3 aiteam.py team \"your task\"{C.RESET}")
 

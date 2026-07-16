@@ -16,7 +16,6 @@ API Key setup:
 """
 
 import asyncio
-import json
 import requests
 from .base import BaseAgent, AgentResult
 from .session_store import get_session
