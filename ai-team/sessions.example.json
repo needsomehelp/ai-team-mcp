@@ -1,13 +1,50 @@
 {
+  "_readme": "Copy this file to sessions.json and fill in your tokens. Never commit sessions.json (it's in .gitignore).",
+
   "chatgpt": {
-    "access_token": "YOUR_CHATGPT_ACCESS_TOKEN_HERE"
+    "_how_to_get": [
+      "OPTION A — Web session JWT (eyJ...) — text chat only, no API key needed:",
+      "  1. Log into chatgpt.com in Chrome",
+      "  2. Open DevTools (Cmd+Option+I) → Application → Storage → Cookies → chatgpt.com",
+      "  3. Find '__Secure-next-auth.session-token' → copy its value",
+      "  4. OR: DevTools → Console → paste: await fetch('/api/auth/session').then(r=>r.json()).then(d=>console.log(d.accessToken))",
+      "  5. Paste the eyJ... token as access_token below",
+      "",
+      "OPTION B — Real OpenAI API key (sk-...) — text + image generation (DALL-E 3):",
+      "  1. Go to platform.openai.com/api-keys",
+      "  2. Create a new key with 'All' permissions",
+      "  3. Paste the sk-... key as access_token below",
+      "",
+      "OPTION C — Web session + cookies (for DALL-E image generation without API key):",
+      "  1. Log into chatgpt.com in Chrome",
+      "  2. DevTools → Network → click any chatgpt.com request → copy 'Cookie' header value",
+      "  3. Run: python3 aiteam.py login chatgpt  and paste the cookie string when prompted",
+      "  Note: cf_clearance cookie expires every few hours and is IP-bound"
+    ],
+    "access_token": "eyJ... (web session JWT, expires ~10 days) OR sk-... (API key, never expires)",
+    "proxy": "optional: http://user:pass@host:port or socks5://host:port (leave empty if not needed)"
   },
+
   "gemini": {
+    "_how_to_get": [
+      "1. Go to aistudio.google.com/app/apikey",
+      "2. Click 'Create API key'",
+      "3. Paste below"
+    ],
     "api_key": "YOUR_GEMINI_API_KEY_HERE",
     "model": "gemini-2.5-flash"
   },
+
   "perplexity": {
-    "api_key": "YOUR_PERPLEXITY_API_KEY_HERE",
-    "model": "sonar"
+    "_how_to_get": [
+      "OPTION A — Browser cookies (free with Pro subscription):",
+      "  1. Log into perplexity.ai in Chrome",
+      "  2. DevTools → Network → click any perplexity.ai request → copy 'Cookie' header value",
+      "  3. Run: python3 aiteam.py login perplexity  and paste the cookie string when prompted",
+      "",
+      "OPTION B — API key (paid, perplexity.ai/settings/api):",
+      "  Paste the pplx-... key as api_key below"
+    ],
+    "api_key": "YOUR_PERPLEXITY_API_KEY_HERE"
   }
 }
