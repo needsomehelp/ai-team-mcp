@@ -120,6 +120,10 @@ Each AI uses **your own subscription**. No middleman, no extra costs.
 
 ### ChatGPT (your Plus/Pro subscription)
 
+You can login with either an **access token** or **browser cookies** — try the access token first, fall back to cookies if blocked.
+
+**Option A: Access Token (quickest)**
+
 1. Open [chatgpt.com](https://chatgpt.com) and make sure you're logged in
 2. Go to [chatgpt.com/api/auth/session](https://chatgpt.com/api/auth/session)
 3. Copy the `accessToken` value from the JSON
@@ -129,7 +133,21 @@ python3 aiteam.py login chatgpt
 # Paste your access token when prompted
 ```
 
-> **Note:** This token expires periodically. If ChatGPT stops working, just re-login with a fresh token.
+**Option B: Browser Cookies (more stable, beats Cloudflare blocks)**
+
+1. Open [chatgpt.com](https://chatgpt.com) in your browser (logged in)
+2. Open DevTools (Cmd+Option+I on Mac, F12 on Windows)
+3. Go to **Network** tab → click any request to chatgpt.com
+4. Find the **Cookie** header in Request Headers
+5. Copy the entire cookie string
+
+```bash
+python3 aiteam.py login chatgpt
+# Paste the cookie string when prompted
+```
+
+> **Note:** Tokens and cookies expire periodically. If ChatGPT stops working, re-login with a fresh token/cookie.
+> **Moving to a new computer?** Sessions are tied to your browser — re-run the login steps on each machine. Do NOT copy `sessions.json` across machines; get fresh credentials instead.
 
 ### Gemini (free API key)
 
