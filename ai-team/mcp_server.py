@@ -25,10 +25,17 @@ from mcp.server.fastmcp import FastMCP
 
 from agents.session_store import save_session, get_session
 from agents.claude_agent import ClaudeAgent
+import agents.chatgpt_agent as _chatgpt_module
 from agents.chatgpt_agent import ChatGPTWebAgent
 from agents.gemini_agent import GeminiWebAgent
 from agents.perplexity_agent import PerplexityWebAgent
 from agents.team import AgentTeam
+
+def _get_chatgpt() -> "ChatGPTWebAgent":
+    """Always reload the chatgpt agent module so code changes take effect without restart."""
+    import importlib
+    importlib.reload(_chatgpt_module)
+    return _chatgpt_module.ChatGPTWebAgent()
 
 mcp = FastMCP("ai-team")
 
@@ -38,7 +45,7 @@ def ai_team_status() -> str:
     """Check which AI agents are logged in and ready (Claude, ChatGPT, Gemini, Perplexity)."""
     agents = {
         "Claude Code": ("cli", ClaudeAgent().is_ready()),
-        "ChatGPT Plus": ("web", ChatGPTWebAgent().is_ready()),
+        "ChatGPT Plus": ("web", _get_chatgpt().is_ready()),
         "Gemini Advanced": ("web", GeminiWebAgent().is_ready()),
         "Perplexity Pro": ("web", PerplexityWebAgent().is_ready()),
     }
@@ -67,7 +74,28 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
     For Gemini: Option A (API key): get free key at https://aistudio.google.com/apikey. Option B (browser cookies): copy cookies from gemini.google.com via DevTools.
     For Perplexity: browser DevTools → Network → click any perplexity.ai request → copy the Cookie header value as token. Or paste all cookies as JSON dict."""
     if service == "chatgpt":
-        save_session("chatgpt", {"access_token": token})
+        import json as _json
+        existing = get_session("chatgpt")
+        # Try as JSON cookies dict
+        try:
+            cookies = _json.loads(token)
+            if isinstance(cookies, dict):
+                existing["cookies"] = cookies
+                save_session("chatgpt", existing)
+                return f"ChatGPT logged in with {len(cookies)} browser cookies! You can now use ask_chatgpt."
+        except (ValueError, TypeError):
+            pass
+        # Try as cookie header string (name1=val1; name2=val2; ...)
+        if ";" in token and "=" in token:
+            from agents.perplexity_agent import parse_cookie_string
+            cookies = parse_cookie_string(token)
+            if cookies:
+                existing["cookies"] = cookies
+                save_session("chatgpt", existing)
+                return f"ChatGPT logged in with {len(cookies)} browser cookies! You can now use ask_chatgpt."
+        # Otherwise treat as access token
+        existing["access_token"] = token
+        save_session("chatgpt", existing)
         return "ChatGPT logged in successfully! You can now use ask_chatgpt."
     elif service == "gemini":
         # Detect: cookie string (has ; and =, multiple pairs), JSON dict, or API key
@@ -196,7 +224,7 @@ def ask_chatgpt(task: str, context: str = "") -> str:
     No API key needed — uses your existing ChatGPT Plus session token.
     """
     if _is_image_request(task):
-        agent = ChatGPTWebAgent()
+        agent = _get_chatgpt()
         if not agent.is_ready():
             return "ChatGPT not logged in. Use ai_team_login(service='chatgpt', token='...')"
 
@@ -283,7 +311,7 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: st
     import requests as _req
 
     # Step 1: Try ChatGPT/DALL-E first (uses your Plus subscription)
-    agent = ChatGPTWebAgent()
+    agent = _get_chatgpt()
     if agent.is_ready():
         result = agent.generate_image(prompt)
         if result.success and "Image URL:" in result.content:
@@ -377,7 +405,7 @@ def ai_team_chat(task: str, context: str = "") -> str:
     """Collaborate with ChatGPT as a team. Sends the task to ChatGPT and returns its
     response so Claude can combine it with its own analysis for a unified team answer.
     Use this when the user invokes /aiteam mode."""
-    chatgpt = ChatGPTWebAgent()
+    chatgpt = _get_chatgpt()
     if not chatgpt.is_ready():
         return "ChatGPT is not logged in. Use ai_team_login tool first.\nService: chatgpt"
 
@@ -397,17 +425,15 @@ def ai_team_chat(task: str, context: str = "") -> str:
 
 
 def _do_ask(service, task, context=""):
-    agents = {
-        "chatgpt": ChatGPTWebAgent,
-        "gemini": GeminiWebAgent,
-        "perplexity": PerplexityWebAgent,
-    }
-
-    agent_class = agents.get(service)
-    if not agent_class:
+    if service == "chatgpt":
+        agent = _get_chatgpt()
+    elif service == "gemini":
+        agent = GeminiWebAgent()
+    elif service == "perplexity":
+        agent = PerplexityWebAgent()
+    else:
         return f"Unknown service: {service}"
-
-    agent = agent_class()
+    agent_class = type(agent)  # noqa — kept for compat
     if not agent.is_ready():
         return (f"{agent.name} is not logged in. Use ai_team_login tool first.\n"
                 f"Service: {service}")

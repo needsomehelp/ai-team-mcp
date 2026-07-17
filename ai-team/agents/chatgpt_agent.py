@@ -15,7 +15,12 @@ Image generation:
 
 import json
 import uuid
-import requests
+try:
+    from curl_cffi import requests
+    _CURL_CFFI = True
+except ImportError:
+    import requests
+    _CURL_CFFI = False
 from .base import BaseAgent, AgentResult
 from .session_store import get_session
 
@@ -27,19 +32,74 @@ class ChatGPTWebAgent(BaseAgent):
         super().__init__("ChatGPT", "architect")
         session = get_session("chatgpt")
         self.access_token = session.get("access_token", "")
+        self.cookies = session.get("cookies", {})
+        self.device_id = session.get("device_id", self.cookies.get("oai-did", ""))
+        self.build_number = session.get("build_number", "")
+        self.client_version = session.get("client_version", "")
 
     def is_ready(self) -> bool:
         return bool(self.access_token)
 
     def _headers(self, accept="text/event-stream"):
-        return {
+        h = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
             "Accept": accept,
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
+            "sec-ch-ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "oai-language": "en-US",
         }
+        if self.device_id:
+            h["oai-device-id"] = self.device_id
+        if self.build_number:
+            h["oai-client-build-number"] = self.build_number
+        if self.client_version:
+            h["oai-client-version"] = self.client_version
+        return h
+
+    def _get_sentinel_token(self) -> str:
+        """Fetch the chat-requirements sentinel token needed for /conversation."""
+        try:
+            kwargs = dict(
+                headers=self._headers(accept="application/json"),
+                cookies=self.cookies or None,
+                timeout=15,
+            )
+            if _CURL_CFFI:
+                kwargs["impersonate"] = "chrome131"
+            resp = requests.post(
+                f"{self.BASE_URL}/sentinel/chat-requirements",
+                json={},
+                **kwargs,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("token", "")
+        except Exception:
+            pass
+        return ""
+
+    def _get_error_msg(self, response) -> str:
+        """Extract real error from response body instead of guessing."""
+        try:
+            body = response.json()
+            detail = body.get("detail", "")
+            if detail:
+                if "Unusual activity" in detail:
+                    return f"Cloudflare blocked request (temporary): {detail[:120]}. Wait a few minutes and try again."
+                return detail[:200]
+        except Exception:
+            pass
+        if response.status_code == 401:
+            return "Session expired. Run: python3 aiteam.py login chatgpt"
+        return f"HTTP {response.status_code} error from ChatGPT"
 
     def _fetch_image_url(self, asset_pointer: str) -> str:
         """Resolve a ChatGPT asset pointer to a real download URL.
@@ -56,10 +116,16 @@ class ChatGPTWebAgent(BaseAgent):
 
         try:
             # Try current endpoint: estuary/content
+            get_kwargs = dict(
+                headers=self._headers(accept="application/json"),
+                cookies=self.cookies or None,
+                timeout=30,
+            )
+            if _CURL_CFFI:
+                get_kwargs["impersonate"] = "chrome131"
             resp = requests.get(
                 f"{self.BASE_URL}/files/{clean_id}/download",
-                headers=self._headers(accept="application/json"),
-                timeout=30,
+                **get_kwargs,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -112,90 +178,43 @@ class ChatGPTWebAgent(BaseAgent):
 
         return full_text.strip(), image_urls
 
-    def _send_conversation(self, prompt: str, model: str = "auto") -> requests.Response:
-        """Send a message to ChatGPT and return the streaming response."""
-        payload = {
-            "action": "next",
-            "messages": [{
-                "id": str(uuid.uuid4()),
-                "author": {"role": "user"},
-                "content": {"content_type": "text", "parts": [prompt]},
-            }],
-            "parent_message_id": str(uuid.uuid4()),
-            "model": model,
-            "timezone_offset_min": -330,
-            "history_and_training_disabled": False,
-            "conversation_mode": {"kind": "primary_assistant"},
+    def _api_headers(self):
+        """Headers for the official OpenAI API (bypasses Cloudflare WAF)."""
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
         }
-        return requests.post(
-            f"{self.BASE_URL}/conversation",
-            headers=self._headers(),
-            json=payload,
-            stream=True,
-            timeout=180,
+
+    def _call_api(self, messages: list, model: str = "gpt-4o", max_tokens: int = 1000) -> str:
+        """Call OpenAI API directly — works with the session access token."""
+        import requests as std_requests
+        resp = std_requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=self._api_headers(),
+            json={"model": model, "messages": messages, "max_tokens": max_tokens},
+            timeout=60,
         )
+        if resp.status_code == 401:
+            raise Exception("Session expired. Refresh token at https://chatgpt.com/api/auth/session")
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
     def generate_image(self, prompt: str) -> AgentResult:
-        """Ask ChatGPT (GPT-4o + DALL-E) to generate an image and return the CDN URL."""
+        """Generate image via DALL-E 3 using the session token."""
         if not self.is_ready():
             return AgentResult(self.name, self.role, "", False,
                              "ChatGPT not logged in. Run: python3 aiteam.py login chatgpt")
-
-        # Use gpt-4o explicitly — "auto" may not trigger DALL-E
-        # Phrase the request so GPT-4o routes to DALL-E
-        image_prompt = f"Please generate an image: {prompt}"
-
         try:
-            response = self._send_conversation(image_prompt, model="gpt-4o")
-
-            if response.status_code in (401, 403):
-                return AgentResult(self.name, self.role, "", False,
-                                 "Session expired. Run: python3 aiteam.py login chatgpt")
-            response.raise_for_status()
-
-            text, image_urls = self._parse_sse_stream(response)
-
-            if image_urls:
-                # Fetch the image bytes using auth headers (URL requires session token)
-                fetched_urls = []
-                for img_url in image_urls:
-                    try:
-                        r = requests.get(
-                            img_url,
-                            headers=self._headers(accept="image/*"),
-                            timeout=60,
-                            stream=True,
-                        )
-                        if r.status_code == 200:
-                            import tempfile
-                            ext = "png" if "png" in r.headers.get("content-type", "") else "jpg"
-                            tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
-                            for chunk in r.iter_content(8192):
-                                tmp.write(chunk)
-                            tmp.close()
-                            fetched_urls.append((img_url, tmp.name))
-                    except Exception:
-                        fetched_urls.append((img_url, ""))
-
-                lines = []
-                if text:
-                    lines.append(text)
-                for cdn_url, local_path in fetched_urls:
-                    lines.append(f"Image URL: {cdn_url}")
-                    if local_path:
-                        lines.append(f"Saved to: {local_path}")
-                return AgentResult(self.name, self.role, "\n".join(lines), True)
-
-            # GPT-4o responded with text only (didn't trigger DALL-E)
-            if text:
-                return AgentResult(self.name, self.role, text, False,
-                                 "ChatGPT responded with text instead of generating an image.")
-
-            return AgentResult(self.name, self.role, "", False,
-                             "ChatGPT did not generate an image. It may need DALL-E access.")
-
-        except requests.exceptions.Timeout:
-            return AgentResult(self.name, self.role, "", False, "ChatGPT request timed out")
+            import requests as std_requests
+            resp = std_requests.post(
+                "https://api.openai.com/v1/images/generations",
+                headers=self._api_headers(),
+                json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": "1024x1024"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            url = resp.json()["data"][0]["url"]
+            return AgentResult(self.name, self.role, f"Image URL: {url}", True)
         except Exception as e:
             return AgentResult(self.name, self.role, "", False, str(e))
 
@@ -210,27 +229,8 @@ class ChatGPTWebAgent(BaseAgent):
         )
 
         try:
-            response = self._send_conversation(full_prompt)
-
-            if response.status_code in (401, 403):
-                return AgentResult(self.name, self.role, "", False,
-                                 "Session expired. Run: python3 aiteam.py login chatgpt")
-
-            response.raise_for_status()
-
-            text, image_urls = self._parse_sse_stream(response)
-
-            # Build combined result — text + image URLs if any were generated
-            if image_urls:
-                url_block = "\n".join(f"Image URL: {u}" for u in image_urls)
-                combined = f"{text}\n\n{url_block}".strip() if text else url_block
-                return AgentResult(self.name, self.role, combined, True)
-
-            if text:
-                return AgentResult(self.name, self.role, text, True)
-
-            return AgentResult(self.name, self.role, "", False, "Empty response from ChatGPT")
-
+            text = self._call_api([{"role": "user", "content": full_prompt}])
+            return AgentResult(self.name, self.role, text, True)
         except requests.exceptions.Timeout:
             return AgentResult(self.name, self.role, "", False, "ChatGPT request timed out")
         except Exception as e:
