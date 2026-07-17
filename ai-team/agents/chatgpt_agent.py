@@ -178,15 +178,49 @@ class ChatGPTWebAgent(BaseAgent):
 
         return full_text.strip(), image_urls
 
+    def _is_api_key(self) -> bool:
+        """True if the stored token is a real OpenAI API key (sk-...) vs a web session token."""
+        return self.access_token.startswith("sk-")
+
     def _api_headers(self):
-        """Headers for the official OpenAI API (bypasses Cloudflare WAF)."""
+        """Headers for the official OpenAI API."""
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
         }
 
+    def _send_conversation(self, prompt: str, model: str = "auto") -> "requests.Response":
+        """Send a message via ChatGPT web (session token path) and return the streaming response."""
+        sentinel = self._get_sentinel_token()
+        payload = {
+            "action": "next",
+            "messages": [{
+                "id": str(uuid.uuid4()),
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [prompt]},
+            }],
+            "parent_message_id": str(uuid.uuid4()),
+            "model": model,
+            "timezone_offset_min": -330,
+            "history_and_training_disabled": False,
+            "conversation_mode": {"kind": "primary_assistant"},
+        }
+        headers = self._headers()
+        if sentinel:
+            headers["openai-sentinel-chat-requirements-token"] = sentinel
+        kwargs = dict(
+            headers=headers,
+            cookies=self.cookies or None,
+            json=payload,
+            stream=True,
+            timeout=180,
+        )
+        if _CURL_CFFI:
+            kwargs["impersonate"] = "chrome131"
+        return requests.post(f"{self.BASE_URL}/conversation", **kwargs)
+
     def _call_api(self, messages: list, model: str = "gpt-4o", max_tokens: int = 1000) -> str:
-        """Call OpenAI API directly — works with the session access token."""
+        """Call OpenAI API directly — only works with a real sk-... API key."""
         import requests as std_requests
         resp = std_requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -195,26 +229,52 @@ class ChatGPTWebAgent(BaseAgent):
             timeout=60,
         )
         if resp.status_code == 401:
-            raise Exception("Session expired. Refresh token at https://chatgpt.com/api/auth/session")
+            raise Exception("Invalid API key. Use a real OpenAI API key (sk-...) or a web session token.")
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
     def generate_image(self, prompt: str) -> AgentResult:
-        """Generate image via DALL-E 3 using the session token."""
+        """Generate image via DALL-E 3.
+
+        - If token is a real OpenAI API key (sk-...) → use api.openai.com/v1/images/generations
+        - Otherwise → use ChatGPT web conversation (session token / cookies path)
+        """
         if not self.is_ready():
             return AgentResult(self.name, self.role, "", False,
                              "ChatGPT not logged in. Run: python3 aiteam.py login chatgpt")
+
+        # --- Path 1: real OpenAI API key ---
+        if self._is_api_key():
+            try:
+                import requests as std_requests
+                resp = std_requests.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers=self._api_headers(),
+                    json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": "1024x1024"},
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                url = resp.json()["data"][0]["url"]
+                return AgentResult(self.name, self.role, f"Image URL: {url}", True)
+            except Exception as e:
+                return AgentResult(self.name, self.role, "", False, str(e))
+
+        # --- Path 2: web session token / browser cookies ---
         try:
-            import requests as std_requests
-            resp = std_requests.post(
-                "https://api.openai.com/v1/images/generations",
-                headers=self._api_headers(),
-                json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": "1024x1024"},
-                timeout=60,
-            )
-            resp.raise_for_status()
-            url = resp.json()["data"][0]["url"]
-            return AgentResult(self.name, self.role, f"Image URL: {url}", True)
+            response = self._send_conversation(f"Please generate an image: {prompt}", model="gpt-4o")
+            if response.status_code in (401, 403):
+                return AgentResult(self.name, self.role, "", False,
+                                 self._get_error_msg(response))
+            response.raise_for_status()
+            text, image_urls = self._parse_sse_stream(response)
+            if image_urls:
+                lines = ([text] if text else []) + [f"Image URL: {u}" for u in image_urls]
+                return AgentResult(self.name, self.role, "\n".join(lines), True)
+            if text:
+                return AgentResult(self.name, self.role, text, False,
+                                 "ChatGPT responded with text instead of an image. Try rephrasing.")
+            return AgentResult(self.name, self.role, "", False,
+                             "ChatGPT did not generate an image. It may need DALL-E access.")
         except Exception as e:
             return AgentResult(self.name, self.role, "", False, str(e))
 
@@ -228,10 +288,28 @@ class ChatGPTWebAgent(BaseAgent):
             "Design clean architecture. Plan file structure, data flow, and interfaces. Think step by step."
         )
 
+        # --- Path 1: real OpenAI API key ---
+        if self._is_api_key():
+            try:
+                text = self._call_api([{"role": "user", "content": full_prompt}])
+                return AgentResult(self.name, self.role, text, True)
+            except Exception as e:
+                return AgentResult(self.name, self.role, "", False, str(e))
+
+        # --- Path 2: web session token / browser cookies ---
         try:
-            text = self._call_api([{"role": "user", "content": full_prompt}])
-            return AgentResult(self.name, self.role, text, True)
-        except requests.exceptions.Timeout:
-            return AgentResult(self.name, self.role, "", False, "ChatGPT request timed out")
+            response = self._send_conversation(full_prompt)
+            if response.status_code in (401, 403):
+                return AgentResult(self.name, self.role, "", False,
+                                 self._get_error_msg(response))
+            response.raise_for_status()
+            text, image_urls = self._parse_sse_stream(response)
+            if image_urls:
+                url_block = "\n".join(f"Image URL: {u}" for u in image_urls)
+                combined = f"{text}\n\n{url_block}".strip() if text else url_block
+                return AgentResult(self.name, self.role, combined, True)
+            if text:
+                return AgentResult(self.name, self.role, text, True)
+            return AgentResult(self.name, self.role, "", False, "Empty response from ChatGPT")
         except Exception as e:
             return AgentResult(self.name, self.role, "", False, str(e))
