@@ -15,8 +15,10 @@ Then use from Claude Code:
     "Run the full AI team on this task"
 """
 
+import re
 import sys
 import os
+from typing import Optional
 
 # Add project root to path so agents can be imported
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.fastmcp import FastMCP
 
 from agents.session_store import save_session, get_session
+from agents.base import read_files_for_context, save_temp_image
 from agents.claude_agent import ClaudeAgent
 import agents.chatgpt_agent as _chatgpt_module
 from agents.chatgpt_agent import ChatGPTWebAgent
@@ -31,10 +34,27 @@ from agents.gemini_agent import GeminiWebAgent
 from agents.perplexity_agent import PerplexityWebAgent
 from agents.team import AgentTeam
 
+
+def _with_files(context: str, files: Optional[list]) -> str:
+    """Prepend read-only contents of `files` (repo paths) to an agent's context so it
+    sees your real code instead of guessing signatures. Secrets are stripped out."""
+    if not files:
+        return context or ""
+    file_text, notes = read_files_for_context(files, os.getcwd())
+    prefix = ""
+    if file_text:
+        prefix += file_text + "\n\n"
+    if notes:
+        prefix += "[file notes] " + "; ".join(notes) + "\n\n"
+    return prefix + (context or "")
+
 def _get_chatgpt() -> "ChatGPTWebAgent":
-    """Always reload the chatgpt agent module so code changes take effect without restart."""
-    import importlib
-    importlib.reload(_chatgpt_module)
+    """Instantiate the ChatGPT agent. In dev mode (AITEAM_DEV=1) reload the module first
+    so code edits take effect without restarting the server. The rate-limiter state now
+    lives in agents.base (not reloaded), so reloading here no longer resets the throttle."""
+    if os.environ.get("AITEAM_DEV"):
+        import importlib
+        importlib.reload(_chatgpt_module)
     return _chatgpt_module.ChatGPTWebAgent()
 
 mcp = FastMCP("ai-team")
@@ -166,15 +186,16 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
 
 
 _IMAGE_KEYWORDS = (
-    "generate image", "create image", "make image", "draw", "render image",
+    "generate image", "create image", "make image", "render image",
     "text to image", "image of", "picture of", "photo of", "illustration of",
     "generate a picture", "make a picture", "create a picture",
+    "draw an image", "draw a picture", "draw me a picture", "draw me an image",
 )
 
 
 def _is_image_request(task: str) -> bool:
     t = task.lower()
-    return any(kw in t for kw in _IMAGE_KEYWORDS)
+    return any(re.search(rf"\b{re.escape(kw)}\b", t) for kw in _IMAGE_KEYWORDS)
 
 
 def _dalle3(prompt: str, size: str = "1024x1024", quality: str = "standard") -> str:
@@ -216,12 +237,46 @@ def _dalle3(prompt: str, size: str = "1024x1024", quality: str = "standard") -> 
         return f"DALL-E 3 error: {e}"
 
 
+def _pollinations_fallback(prompt: str, width: int = 1024, height: int = 1024, model: str = "flux") -> str:
+    """Free, keyless image fallback. Downloads to a pruned temp dir when possible and
+    returns a formatted result for Claude to display. Shared by ask_chatgpt and
+    generate_image so the fallback path lives in one place."""
+    import urllib.parse
+    import requests as _req
+
+    encoded = urllib.parse.quote(prompt)
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?model={model}&width={width}&height={height}&nologo=true&enhance=true"
+    )
+    try:
+        r = _req.get(url, timeout=60, stream=True)
+        if r.status_code == 200:
+            ext = "png" if "png" in r.headers.get("content-type", "") else "jpg"
+            path = save_temp_image(b"".join(r.iter_content(8192)), ext)
+            return (
+                f"[Pollinations/{model}]\n\n"
+                f"URL: {url}\n"
+                f"Saved to: {path}\n\n"
+                f"Claude: read {path} and display the image to the user."
+            )
+    except Exception:
+        pass
+    return (
+        f"[Pollinations/{model}]\n\n"
+        f"URL: {url}\n\n"
+        f"Claude: fetch this URL and display the image to the user."
+    )
+
+
 @mcp.tool()
-def ask_chatgpt(task: str, context: str = "") -> str:
+def ask_chatgpt(task: str, context: str = "", files: Optional[list] = None) -> str:
     """Send a task to ChatGPT (using your Plus/Pro subscription).
     Best for: architecture, planning, reasoning, AND image generation.
     For images: ChatGPT generates via DALL-E, we fetch the CDN URL, Claude displays it.
     No API key needed — uses your existing ChatGPT Plus session token.
+    files: optional list of repo file paths (relative to the project) to read and include
+           so ChatGPT sees your real code. Secret files (.env*, sessions.json) are skipped.
     """
     if _is_image_request(task):
         agent = _get_chatgpt()
@@ -243,41 +298,37 @@ def ask_chatgpt(task: str, context: str = "") -> str:
             return dalle_result
 
         # Final fallback: Pollinations (free, no key)
-        import urllib.parse
-        import requests as _req
-        encoded = urllib.parse.quote(task)
-        url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true&enhance=true"
-        try:
-            r = _req.head(url, timeout=45, allow_redirects=True)
-            if r.status_code == 200:
-                return f"Image URL: {url}\n\nClaude: fetch this URL and display the image."
-        except Exception:
-            pass
-        return f"Image URL: {url}\n\nClaude: fetch this URL and display the image."
+        return _pollinations_fallback(task)
 
-    return _do_ask("chatgpt", task, context)
+    return _do_ask("chatgpt", task, _with_files(context, files))
 
 
 @mcp.tool()
-def ask_gemini(task: str, context: str = "") -> str:
-    """Send a task to Gemini (using your Advanced subscription). Best for: code review, finding bugs, security analysis."""
-    return _do_ask("gemini", task, context)
+def ask_gemini(task: str, context: str = "", files: Optional[list] = None) -> str:
+    """Send a task to Gemini (using your Advanced subscription). Best for: code review, finding bugs, security analysis.
+    files: optional list of repo file paths (relative to the project) to read and include
+           so Gemini reviews your real code. Secret files (.env*, sessions.json) are skipped."""
+    return _do_ask("gemini", task, _with_files(context, files))
 
 
 @mcp.tool()
-def ask_perplexity(task: str, context: str = "") -> str:
-    """Send a task to Perplexity (using your Pro subscription). Best for: research, finding docs, examples, best practices."""
-    return _do_ask("perplexity", task, context)
+def ask_perplexity(task: str, context: str = "", files: Optional[list] = None) -> str:
+    """Send a task to Perplexity (using your Pro subscription). Best for: research, finding docs, examples, best practices.
+    files: optional list of repo file paths (relative to the project) to read and include."""
+    return _do_ask("perplexity", task, _with_files(context, files))
 
 
 @mcp.tool()
-def ai_team_run(task: str, context: str = "") -> str:
+def ai_team_run(task: str, context: str = "", files: Optional[list] = None) -> str:
     """Run the full AI team pipeline on a task.
     Pipeline: Perplexity researches -> ChatGPT designs architecture ->
     Claude implements -> Gemini reviews. Each step feeds into the next.
-    Skips agents that aren't logged in."""
+    Skips agents that aren't logged in.
+    files: optional list of repo file paths (relative to the project) to read and feed the
+           whole team — this is what stops the coder step from hallucinating your real
+           signatures. Secret files (.env*, sessions.json) are skipped."""
     team = AgentTeam(os.getcwd())
-    results = team.run_pipeline(task, context)
+    results = team.run_pipeline(task, _with_files(context, files))
 
     output_lines = []
     succeeded = 0
@@ -307,9 +358,6 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: st
         height: Image height in pixels (default 1024)
         model:  Fallback model — 'flux' (default), 'turbo', 'flux-realism'
     """
-    import urllib.parse
-    import requests as _req
-
     # Step 1: Try ChatGPT/DALL-E first (uses your Plus subscription)
     agent = _get_chatgpt()
     if agent.is_ready():
@@ -322,34 +370,7 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: st
             )
 
     # Step 2: Fallback to Pollinations (free, no key needed)
-    encoded = urllib.parse.quote(prompt)
-    url = (
-        f"https://image.pollinations.ai/prompt/{encoded}"
-        f"?model={model}&width={width}&height={height}&nologo=true&enhance=true"
-    )
-    try:
-        r = _req.get(url, timeout=60, stream=True)
-        if r.status_code == 200:
-            import tempfile
-            ext = "png" if "png" in r.headers.get("content-type", "") else "jpg"
-            tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
-            for chunk in r.iter_content(8192):
-                tmp.write(chunk)
-            tmp.close()
-            return (
-                f"[Pollinations/{model}]\n\n"
-                f"URL: {url}\n"
-                f"Saved to: {tmp.name}\n\n"
-                f"Claude: read {tmp.name} and display the image to the user."
-            )
-    except Exception:
-        pass
-
-    return (
-        f"[Pollinations/{model}]\n\n"
-        f"URL: {url}\n\n"
-        f"Claude: fetch this URL and display the image to the user."
-    )
+    return _pollinations_fallback(prompt, width, height, model)
 
 
 @mcp.tool()
@@ -433,7 +454,6 @@ def _do_ask(service, task, context=""):
         agent = PerplexityWebAgent()
     else:
         return f"Unknown service: {service}"
-    agent_class = type(agent)  # noqa — kept for compat
     if not agent.is_ready():
         return (f"{agent.name} is not logged in. Use ai_team_login tool first.\n"
                 f"Service: {service}")

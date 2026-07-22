@@ -125,7 +125,7 @@ class TestChatGPTAgent:
         assert "not logged in" in result.error.lower()
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("requests.post")
+    @patch("agents.chatgpt_agent.requests.post")
     def test_execute_success(self, mock_post, mock_session):
         from agents.chatgpt_agent import ChatGPTWebAgent
         # Simulate SSE stream response — iter_lines with decode_unicode=True returns str
@@ -158,7 +158,7 @@ class TestChatGPTAgent:
         assert "expired" in result.error.lower()
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("requests.post")
+    @patch("agents.chatgpt_agent.requests.post")
     def test_execute_timeout(self, mock_post, mock_session):
         from agents.chatgpt_agent import ChatGPTWebAgent
         import requests
@@ -170,8 +170,8 @@ class TestChatGPTAgent:
         assert "timed out" in result.error.lower()
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("requests.get")
-    @patch("requests.post")
+    @patch("agents.chatgpt_agent.requests.get")
+    @patch("agents.chatgpt_agent.requests.post")
     def test_execute_image_generation(self, mock_post, mock_get, mock_session):
         """ChatGPT returns image_asset_pointer — agent resolves it to a download URL."""
         from agents.chatgpt_agent import ChatGPTWebAgent
@@ -198,8 +198,8 @@ class TestChatGPTAgent:
         assert "https://files.oaistatic.com/img.png" in result.content
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("requests.get")
-    @patch("requests.post")
+    @patch("agents.chatgpt_agent.requests.get")
+    @patch("agents.chatgpt_agent.requests.post")
     def test_execute_image_and_text(self, mock_post, mock_get, mock_session):
         """ChatGPT returns both text and an image — both appear in result."""
         from agents.chatgpt_agent import ChatGPTWebAgent

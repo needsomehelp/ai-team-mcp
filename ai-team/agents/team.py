@@ -7,7 +7,6 @@ Uses REAL different AI services - each with your subscription:
 """
 
 import os
-import subprocess
 import concurrent.futures
 from .claude_agent import ClaudeAgent
 from .chatgpt_agent import ChatGPTWebAgent
@@ -32,21 +31,36 @@ class AgentTeam:
         """Check which agents are logged in and ready."""
         return {name: agent.is_ready() for name, agent in self.agents.items()}
 
+    # Directories never worth showing an agent — noise or secrets.
+    _SKIP_DIRS = {"node_modules", ".git", "__pycache__", "sessions", ".venv", "venv"}
+
+    def _list_files(self, max_depth: int = 2) -> str:
+        """List project files up to `max_depth` levels deep — a cross-platform replacement
+        for the old `find -maxdepth 2` (the Unix `find` binary isn't present on Windows, so
+        the subprocess silently failed there and agents got no file listing)."""
+        root = self.project_dir
+        entries = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            # prune in-place so os.walk doesn't descend into skipped dirs
+            dirnames[:] = [d for d in dirnames if d not in self._SKIP_DIRS]
+            rel = os.path.relpath(dirpath, root)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            prefix = "." if rel == "." else "./" + rel.replace(os.sep, "/")
+            for name in filenames:
+                entries.append(f"./{name}" if prefix == "." else f"{prefix}/{name}")
+            if depth >= max_depth - 1:
+                dirnames[:] = []  # at the depth limit — list this dir's files but go no deeper
+            if len(entries) >= 200:
+                break
+        return "\n".join(sorted(entries))
+
     def get_project_context(self, max_chars: int = 1500) -> str:
         """Gather minimal project context — just enough for agents to orient themselves."""
         context_parts = []
 
-        try:
-            result = subprocess.run(
-                ["find", ".", "-maxdepth", "2", "-not", "-path", "*/node_modules/*",
-                 "-not", "-path", "*/.git/*", "-not", "-path", "*/__pycache__/*",
-                 "-not", "-path", "*/sessions/*"],
-                capture_output=True, text=True, cwd=self.project_dir, timeout=5
-            )
-            if result.stdout:
-                context_parts.append(f"FILES:\n{result.stdout[:600]}")
-        except Exception:
-            pass
+        listing = self._list_files(max_depth=2)
+        if listing:
+            context_parts.append(f"FILES:\n{listing[:600]}")
 
         for pkg_file in ["requirements.txt", "package.json", "go.mod"]:
             path = os.path.join(self.project_dir, pkg_file)

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ai-team": {
+      "type": "stdio",
+      "command": "C:/Users/subha/Downloads/ai-team-mcp/ai-team/venv/Scripts/python.exe",
+      "args": [
+        "C:/Users/subha/Downloads/ai-team-mcp/ai-team/mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}

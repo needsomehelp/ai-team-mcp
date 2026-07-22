@@ -1,4 +1,4 @@
 requests>=2.31.0
 mcp>=1.0.0
-perplexity>=0.1.0
+git+https://github.com/helallao/perplexity-ai.git
 gemini-webapi>=2.0.0
