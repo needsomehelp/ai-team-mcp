@@ -1,0 +1,7 @@
+[mcp_servers.ai-team]
+command = "C:/Users/subha/Downloads/ai-team-mcp/ai-team/venv/Scripts/python.exe"
+args = ["C:/Users/subha/Downloads/ai-team-mcp/ai-team/mcp_server.py"]
+cwd = "C:/Users/subha/Downloads/ai-team-mcp/ai-team"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true

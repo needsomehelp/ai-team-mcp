@@ -125,8 +125,8 @@ class TestChatGPTAgent:
         assert "not logged in" in result.error.lower()
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("agents.chatgpt_agent.requests.post")
-    def test_execute_success(self, mock_post, mock_session):
+    @patch("agents.chatgpt_agent.ChatGPTWebAgent._get_client")
+    def test_execute_success(self, mock_client, mock_session):
         from agents.chatgpt_agent import ChatGPTWebAgent
         # Simulate SSE stream response — iter_lines with decode_unicode=True returns str
         sse_lines = [
@@ -137,7 +137,7 @@ class TestChatGPTAgent:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.iter_lines.return_value = sse_lines
-        mock_post.return_value = mock_response
+        mock_client.return_value.post.return_value = mock_response
 
         agent = ChatGPTWebAgent()
         result = agent.execute("test")
@@ -146,11 +146,11 @@ class TestChatGPTAgent:
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "expired"})
     @patch("requests.post")
-    def test_execute_auth_expired(self, mock_post, mock_session):
+    def test_execute_auth_expired(self, mock_client, mock_session):
         from agents.chatgpt_agent import ChatGPTWebAgent
         mock_response = MagicMock()
         mock_response.status_code = 401
-        mock_post.return_value = mock_response
+        mock_client.return_value.post.return_value = mock_response
 
         agent = ChatGPTWebAgent()
         result = agent.execute("test")
@@ -158,11 +158,11 @@ class TestChatGPTAgent:
         assert "expired" in result.error.lower()
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("agents.chatgpt_agent.requests.post")
-    def test_execute_timeout(self, mock_post, mock_session):
+    @patch("agents.chatgpt_agent.ChatGPTWebAgent._get_client")
+    def test_execute_timeout(self, mock_client, mock_session):
         from agents.chatgpt_agent import ChatGPTWebAgent
         import requests
-        mock_post.side_effect = requests.exceptions.Timeout()
+        mock_client.return_value.post.side_effect = requests.exceptions.Timeout()
 
         agent = ChatGPTWebAgent()
         result = agent.execute("test")
@@ -170,9 +170,8 @@ class TestChatGPTAgent:
         assert "timed out" in result.error.lower()
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("agents.chatgpt_agent.requests.get")
-    @patch("agents.chatgpt_agent.requests.post")
-    def test_execute_image_generation(self, mock_post, mock_get, mock_session):
+    @patch("agents.chatgpt_agent.ChatGPTWebAgent._get_client")
+    def test_execute_image_generation(self, mock_client, mock_session):
         """ChatGPT returns image_asset_pointer — agent resolves it to a download URL."""
         from agents.chatgpt_agent import ChatGPTWebAgent
 
@@ -184,13 +183,13 @@ class TestChatGPTAgent:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.iter_lines.return_value = sse_lines
-        mock_post.return_value = mock_response
+        mock_client.return_value.post.return_value = mock_response
 
         # Mock the file download URL fetch
         mock_dl_response = MagicMock()
         mock_dl_response.status_code = 200
         mock_dl_response.json.return_value = {"download_url": "https://files.oaistatic.com/img.png"}
-        mock_get.return_value = mock_dl_response
+        mock_client.return_value.get.return_value = mock_dl_response
 
         agent = ChatGPTWebAgent()
         result = agent.execute("generate an image of a cat")
@@ -198,9 +197,8 @@ class TestChatGPTAgent:
         assert "https://files.oaistatic.com/img.png" in result.content
 
     @patch("agents.chatgpt_agent.get_session", return_value={"access_token": "fake"})
-    @patch("agents.chatgpt_agent.requests.get")
-    @patch("agents.chatgpt_agent.requests.post")
-    def test_execute_image_and_text(self, mock_post, mock_get, mock_session):
+    @patch("agents.chatgpt_agent.ChatGPTWebAgent._get_client")
+    def test_execute_image_and_text(self, mock_client, mock_session):
         """ChatGPT returns both text and an image — both appear in result."""
         from agents.chatgpt_agent import ChatGPTWebAgent
 
@@ -212,12 +210,12 @@ class TestChatGPTAgent:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.iter_lines.return_value = sse_lines
-        mock_post.return_value = mock_response
+        mock_client.return_value.post.return_value = mock_response
 
         mock_dl_response = MagicMock()
         mock_dl_response.status_code = 200
         mock_dl_response.json.return_value = {"download_url": "https://files.oaistatic.com/cat.png"}
-        mock_get.return_value = mock_dl_response
+        mock_client.return_value.get.return_value = mock_dl_response
 
         agent = ChatGPTWebAgent()
         result = agent.execute("draw a cat")
@@ -500,3 +498,54 @@ class TestMCPTools:
         from mcp_server import ai_team_login
         result = ai_team_login(service="unknown", token="abc")
         assert "Unknown service" in result
+
+
+# ── Coding agent safety ──────────────────────────────────────
+
+class TestCodingAgentGuards:
+    """This agent writes files and runs shell commands on the user's machine from a
+    remote model's output, so the guards are the load-bearing part."""
+
+    def _agent(self, tmp_path):
+        from agents.coding_agent import CodingAgent
+        return CodingAgent(team=MagicMock(), project_dir=str(tmp_path), auto_approve=True)
+
+    def test_paths_cannot_escape_the_project(self, tmp_path):
+        agent = self._agent(tmp_path)
+        _, err = agent._safe("../../etc/passwd")
+        assert "outside the project" in err
+
+    def test_credential_files_are_untouchable(self, tmp_path):
+        agent = self._agent(tmp_path)
+        for name in ("sessions.json", ".env", ".env.local", "id.pem"):
+            _, err = agent._safe(name)
+            assert err and "credentials" in err
+
+    def test_destructive_commands_are_blocked(self, tmp_path):
+        agent = self._agent(tmp_path)
+        assert "refused" in agent._tool_run("rm -rf /")
+        assert "refused" in agent._tool_run("git push origin main")
+
+    def test_read_refuses_secrets_but_allows_normal_files(self, tmp_path):
+        (tmp_path / "sessions.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "ok.py").write_text("x = 1\n", encoding="utf-8")
+        agent = self._agent(tmp_path)
+        assert "credentials" in agent._tool_read("sessions.json")
+        assert "x = 1" in agent._tool_read("ok.py")
+
+    def test_write_applies_and_is_tracked(self, tmp_path):
+        agent = self._agent(tmp_path)
+        result = agent._tool_write("new/mod.py", "y = 2")
+        assert "wrote" in result
+        assert (tmp_path / "new" / "mod.py").read_text(encoding="utf-8") == "y = 2\n"
+        assert "new/mod.py" in agent.changed_files
+
+    def test_protocol_parses_every_request_form(self):
+        from agents.coding_agent import ACTION_RE
+        text = ("<<<LIST: .>>> <<<READ: a.py>>> <<<RUN: pytest -q>>>"
+                "<<<WRITE: b.py>>>\nprint(1)\n<<<END>>><<<DONE>>>")
+        found = list(ACTION_RE.finditer(text))
+        assert len(found) == 5
+        assert found[3].group("wpath") == "b.py"
+        assert found[3].group("wbody") == "print(1)"
+        assert found[4].group("done") == "DONE"

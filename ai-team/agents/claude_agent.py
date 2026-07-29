@@ -58,17 +58,23 @@ class ClaudeAgent(BaseAgent):
         return os.path.exists(claude)
 
     def execute(self, prompt: str, context: str = "") -> AgentResult:
+        import os
         full_prompt = self.build_prompt(prompt, context, self.system_prompt)
         try:
             claude = self._find_claude()
             # Limit prompt size to avoid pipe mode issues
             if len(full_prompt) > 12000:
                 full_prompt = full_prompt[:12000] + "\n\n[Context truncated for length]"
-            result = subprocess.run(
-                ["bash", claude, "-p", full_prompt],
-                capture_output=True, text=True, timeout=120,
-                env={**__import__('os').environ, "CLAUDE_CODE_DISABLE_AUTOUPDATE": "1"}
-            )
+            env = {**os.environ, "CLAUDE_CODE_DISABLE_AUTOUPDATE": "1"}
+            # Invoke the CLI directly. The old ["bash", claude, ...] form is fatal on
+            # Windows, where `which` resolves to claude.CMD and bash can't run it --
+            # every call returned empty and looked like "Claude produced no output".
+            cmd = [claude, "-p", full_prompt]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+            if result.returncode != 0 and os.name != "nt" and not result.stdout.strip():
+                # POSIX fallback: a broken shebang in the launcher script needs bash.
+                result = subprocess.run(["bash", claude, "-p", full_prompt],
+                                        capture_output=True, text=True, timeout=120, env=env)
             output = result.stdout.strip()
             if result.returncode == 0 and output:
                 return AgentResult(self.name, self.role, output, True)

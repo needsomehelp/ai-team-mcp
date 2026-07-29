@@ -33,9 +33,32 @@ def save_session(service: str, token_data: dict):
     _write_sessions(sessions)
 
 
+_TOKEN_FIELDS = ("access_token", "api_key", "token", "session_token", "refresh_token")
+
+
+def _clean_token(value: str) -> str:
+    """Strip the junk that comes along when a token is pasted by hand: surrounding
+    whitespace/newlines, literal quote characters copied with the value, and a
+    "Bearer " prefix copied from a DevTools request header. A token stored as
+    '"eyJ..."' silently breaks auth (the quotes go into the Authorization header
+    and every prefix check like startswith("eyJ") fails)."""
+    v = value.strip()
+    while len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1].strip()
+    if v[:7].lower() == "bearer ":
+        v = v[7:].strip()
+    return v
+
+
 def get_session(service: str) -> dict:
     sessions = load_sessions()
-    return sessions.get(service, {})
+    session = sessions.get(service, {})
+    if not isinstance(session, dict):
+        return {}
+    return {
+        k: _clean_token(v) if k in _TOKEN_FIELDS and isinstance(v, str) else v
+        for k, v in session.items()
+    }
 
 
 def remove_session(service: str):

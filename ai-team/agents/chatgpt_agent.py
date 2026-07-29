@@ -13,7 +13,11 @@ Image generation:
 - Returns the actual image URL usable in any browser/app
 """
 
+import base64
+import hashlib
 import json
+import random
+import time
 import uuid
 try:
     from curl_cffi import requests
@@ -27,6 +31,10 @@ from .session_store import get_session
 
 class ChatGPTWebAgent(BaseAgent):
     BASE_URL = "https://chatgpt.com/backend-api"
+    # Set once the OpenAI API reports the account has no credits, so we stop paying
+    # a round-trip for a call that cannot succeed and go straight to the web path.
+    # Process-lifetime only: it clears on restart, so adding credits takes effect.
+    _api_quota_exhausted = False
 
     def __init__(self):
         super().__init__("ChatGPT", "architect")
@@ -38,6 +46,54 @@ class ChatGPTWebAgent(BaseAgent):
         self.client_version = session.get("client_version", "")
         # Optional proxy to bypass IP blocks: "http://user:pass@host:port" or "socks5://host:port"
         self.proxy = session.get("proxy", "")
+        self._client = None
+
+    def _get_client(self):
+        """One warmed-up Session reused for every call.
+
+        This matters: /conversation 403s if the cookies Cloudflare and OpenAI hand
+        out (__cf_bm, oai-did, oai-sc) aren't carried over from the preceding
+        requests. Firing each request standalone drops them and always 403s, which
+        looks exactly like an auth failure but isn't."""
+        if self._client is not None:
+            return self._client
+
+        if _CURL_CFFI:
+            client = requests.Session(impersonate="chrome131")
+        else:
+            client = requests.Session()
+        if self.proxy:
+            client.proxies = {"http": self.proxy, "https": self.proxy}
+        # Seed any cookies the user supplied via `login chatgpt`.
+        for k, v in (self.cookies or {}).items():
+            client.cookies.set(k, v)
+        try:
+            # Warm-up: let the edge issue __cf_bm / oai-did before the API calls.
+            client.get("https://chatgpt.com/",
+                       headers={"User-Agent": self._headers()["User-Agent"]},
+                       timeout=30)
+        except Exception:
+            pass  # A failed warm-up is not fatal -- the API calls may still pass.
+        self._client = client
+        return client
+
+    @staticmethod
+    def _solve_pow(seed: str, difficulty: str, max_iter: int = 200_000) -> str:
+        """Answer the sentinel proof-of-work: find a payload whose
+        sha3_512(seed + payload) hex prefix sorts <= difficulty. Difficulty is
+        low enough that this lands in a handful of iterations."""
+        stamp = time.strftime("%a %b %d %Y %H:%M:%S") + " GMT+0530 (India Standard Time)"
+        ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+        for i in range(max_iter):
+            config = [random.choice([8, 12, 16, 24]), stamp, 4294705152, i, ua,
+                      "", "", "en-US", "en-US,en", i % 7,
+                      "_reactListeningcfilawjnerp", "location", "", i]
+            payload = base64.b64encode(json.dumps(config).encode()).decode()
+            digest = hashlib.sha3_512((seed + payload).encode()).hexdigest()
+            if digest[:len(difficulty)] <= difficulty:
+                return "gAAAAAB" + payload
+        return ""
 
     def _rate_limit(self):
         """Ensure at least 10 seconds between requests to avoid 'unusual activity' detection.
@@ -71,27 +127,27 @@ class ChatGPTWebAgent(BaseAgent):
             h["oai-client-version"] = self.client_version
         return h
 
-    def _get_sentinel_token(self) -> str:
-        """Fetch the chat-requirements sentinel token needed for /conversation."""
+    def _get_sentinel_token(self):
+        """Fetch the chat-requirements token plus the proof-of-work answer that
+        /conversation now demands. Returns (requirements_token, proof_token)."""
         try:
-            kwargs = dict(
-                headers=self._headers(accept="application/json"),
-                cookies=self.cookies or None,
-                timeout=15,
-            )
-            if _CURL_CFFI:
-                kwargs["impersonate"] = "chrome131"
-            resp = requests.post(
+            resp = self._get_client().post(
                 f"{self.BASE_URL}/sentinel/chat-requirements",
+                headers=self._headers(accept="application/json"),
                 json={},
-                **kwargs,
+                timeout=15,
             )
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("token", "")
+                proof = ""
+                pow_req = data.get("proofofwork") or {}
+                if pow_req.get("required"):
+                    proof = self._solve_pow(pow_req.get("seed", ""),
+                                            pow_req.get("difficulty", ""))
+                return data.get("token", ""), proof
         except Exception:
             pass
-        return ""
+        return "", ""
 
     def _get_error_msg(self, response) -> str:
         """Extract real error from response body instead of guessing."""
@@ -111,6 +167,18 @@ class ChatGPTWebAgent(BaseAgent):
             pass
         if response.status_code == 401:
             return "Session expired. Run: python3 aiteam.py login chatgpt"
+        if response.status_code == 403:
+            # /conversation answers 403 with an empty body when the sentinel
+            # challenge wasn't satisfied. chat-requirements now returns
+            # proofofwork.required and turnstile.required; the turnstile token can
+            # only be produced by running Cloudflare's JS in a real browser, so
+            # this path cannot be completed from plain Python.
+            return (
+                "ChatGPT web API returned 403 (sentinel challenge not satisfied). "
+                "chatgpt.com now requires a proof-of-work + Cloudflare turnstile token "
+                "that can only be produced by a real browser, so the web path is unavailable. "
+                "Use an OpenAI API key with credits instead."
+            )
         return f"HTTP {response.status_code} error from ChatGPT"
 
     def _fetch_image_url(self, asset_pointer: str) -> str:
@@ -128,16 +196,10 @@ class ChatGPTWebAgent(BaseAgent):
 
         try:
             # Try current endpoint: estuary/content
-            get_kwargs = dict(
-                headers=self._headers(accept="application/json"),
-                cookies=self.cookies or None,
-                timeout=30,
-            )
-            if _CURL_CFFI:
-                get_kwargs["impersonate"] = "chrome131"
-            resp = requests.get(
+            resp = self._get_client().get(
                 f"{self.BASE_URL}/files/{clean_id}/download",
-                **get_kwargs,
+                headers=self._headers(accept="application/json"),
+                timeout=30,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -154,8 +216,10 @@ class ChatGPTWebAgent(BaseAgent):
         full_text = ""
         image_urls = []
 
-        all_lines = list(response.iter_lines(decode_unicode=True))
-        for line in all_lines:
+        # Decode manually: curl_cffi raises NotImplementedError on
+        # iter_lines(decode_unicode=True), and both backends yield bytes by default.
+        for raw in response.iter_lines():
+            line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
             if not line or not line.startswith("data: "):
                 continue
             data_str = line[6:]
@@ -211,7 +275,7 @@ class ChatGPTWebAgent(BaseAgent):
     def _send_conversation(self, prompt: str, model: str = "auto") -> "requests.Response":
         """Send a message via ChatGPT web (session token path) and return the streaming response."""
         self._rate_limit()
-        sentinel = self._get_sentinel_token()
+        sentinel, proof = self._get_sentinel_token()
         payload = {
             "action": "next",
             "messages": [{
@@ -228,18 +292,15 @@ class ChatGPTWebAgent(BaseAgent):
         headers = self._headers()
         if sentinel:
             headers["openai-sentinel-chat-requirements-token"] = sentinel
-        kwargs = dict(
+        if proof:
+            headers["openai-sentinel-proof-token"] = proof
+        return self._get_client().post(
+            f"{self.BASE_URL}/conversation",
             headers=headers,
-            cookies=self.cookies or None,
             json=payload,
             stream=True,
             timeout=180,
         )
-        if self.proxy:
-            kwargs["proxies"] = {"http": self.proxy, "https": self.proxy}
-        if _CURL_CFFI:
-            kwargs["impersonate"] = "chrome131"
-        return requests.post(f"{self.BASE_URL}/conversation", **kwargs)
 
     def _call_api(self, messages: list, model: str = "gpt-4o", max_tokens: int = 1000) -> str:
         """Call OpenAI API directly — only works with a real sk-... API key."""
@@ -252,6 +313,22 @@ class ChatGPTWebAgent(BaseAgent):
         )
         if resp.status_code == 401:
             raise Exception("Invalid API key. Use a real OpenAI API key (sk-...) or a web session token.")
+        if resp.status_code == 429:
+            # A ChatGPT Plus/Pro subscription does NOT include API quota -- the JWT
+            # authenticates fine here and then fails on billing. Say so, because
+            # "429" on its own reads as rate limiting and sends you chasing retries.
+            code = ""
+            try:
+                code = resp.json().get("error", {}).get("code", "")
+            except Exception:
+                pass
+            if code == "insufficient_quota":
+                raise Exception(
+                    "OpenAI API has no credits on this account (insufficient_quota). "
+                    "A ChatGPT Plus/Pro subscription does not include API quota -- "
+                    "add credits at platform.openai.com/settings/organization/billing."
+                )
+            raise Exception("OpenAI API rate limit hit (429). Try again shortly.")
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
@@ -358,20 +435,39 @@ class ChatGPTWebAgent(BaseAgent):
             "Design clean architecture. Plan file structure, data flow, and interfaces. Think step by step."
         )
 
-        # --- Path 1: sk-... API key OR eyJ... JWT (both work with /v1/chat/completions) ---
-        if self._is_api_key() or self._is_jwt_token():
+        # --- Path 1: sk-... real API key (no web session fallback possible) ---
+        if self._is_api_key():
             try:
                 text = self._call_api([{"role": "user", "content": full_prompt}])
                 return AgentResult(self.name, self.role, text, True)
             except Exception as e:
                 return AgentResult(self.name, self.role, "", False, str(e))
 
+        # --- Path 1b: eyJ... JWT via api.openai.com, falling back to the web
+        # conversation path (Path 2) below if the API call fails (e.g. 429). The
+        # JWT is a valid bearer for chatgpt.com/backend-api too, so this still
+        # only uses the subscription session -- no API key involved. ---
+        api_error = ""
+        if self._is_jwt_token() and not ChatGPTWebAgent._api_quota_exhausted:
+            try:
+                text = self._call_api([{"role": "user", "content": full_prompt}])
+                return AgentResult(self.name, self.role, text, True)
+            except Exception as e:
+                # Remember why the API path failed. Swallowing it here makes every
+                # failure look like whatever the web path reports next, which is
+                # almost never the actual cause.
+                api_error = self._error_text(e)
+                if "insufficient_quota" in api_error:
+                    ChatGPTWebAgent._api_quota_exhausted = True
+
         # --- Path 2: web session token / browser cookies ---
         try:
             response = self._send_conversation(full_prompt)
             if response.status_code in (401, 403):
-                return AgentResult(self.name, self.role, "", False,
-                                 self._get_error_msg(response))
+                msg = self._get_error_msg(response)
+                if api_error:
+                    msg = f"{msg}\nOpenAI API path also failed: {api_error}"
+                return AgentResult(self.name, self.role, "", False, msg)
             response.raise_for_status()
             text, image_urls = self._parse_sse_stream(response)
             if image_urls:
