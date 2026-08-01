@@ -293,6 +293,54 @@ When used as an MCP server, these tools are available:
 
 ---
 
+## REST API
+
+`mcp_server.py` only works when Claude Code spawns it locally over stdio.
+`api_server.py` exposes the same tools as plain HTTP/JSON endpoints, so you
+can call them from anywhere — an Android app, n8n, curl, a browser — not just
+from an MCP client.
+
+**Start it:**
+```
+api_server.cmd                  # Windows
+python3 api_server.py           # any OS
+```
+
+It listens on `0.0.0.0:8642` by default (reachable from your LAN, e.g. from
+your phone). On first run it generates an API key and writes it to
+`ai-team/.env` as `AITEAM_API_KEY` (never committed — already in
+`.gitignore`). Every request except `/health` must send it back as the
+`X-API-Key` header.
+
+Override defaults in `.env`: `AITEAM_API_HOST`, `AITEAM_API_PORT`,
+`AITEAM_CORS_ORIGINS`.
+
+| Method & Path | Body | Same as MCP tool |
+|---|---|---|
+| `GET /health` | — | (no auth, reachability check) |
+| `GET /status` | — | `ai_team_status` |
+| `POST /login` | `{service, token, token2}` | `ai_team_login` |
+| `POST /ask/chatgpt` | `{task, context, files}` | `ask_chatgpt` |
+| `POST /ask/gemini` | `{task, context, files}` | `ask_gemini` |
+| `POST /ask/perplexity` | `{task, context, files}` | `ask_perplexity` |
+| `POST /team/run` | `{task, context, files}` | `ai_team_run` |
+| `POST /chat` | `{task, context}` | `ai_team_chat` |
+| `POST /image/generate` | `{prompt, width, height, model}` | `generate_image` |
+| `POST /image/dalle` | `{prompt, size, quality}` | `generate_image_dalle` |
+
+`generate_video` / `generate_audio` aren't exposed here — they only work
+inside a Claude Code session (they hand off to the Higgsfield MCP tool).
+
+**Example:**
+```bash
+curl -X POST http://<this-machine-ip>:8642/ask/chatgpt \
+  -H "X-API-Key: <your key from .env>" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "explain this repo in 2 sentences"}'
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -306,6 +354,8 @@ ai-team-mcp/
 │   ├── session_store.py      # Secure credential storage
 │   └── team.py               # Team coordinator & pipeline
 ├── mcp_server.py             # MCP server for Claude Code
+├── api_server.py             # REST API (HTTP/JSON) server
+├── api_server.cmd            # Windows launcher for the API server
 ├── aiteam.py                 # CLI interface
 ├── aiteam.sh                 # Global shell command
 ├── config.json               # Agent configuration
@@ -357,3 +407,60 @@ MIT License. Free to use, modify, and distribute.
 <br><br>
 If you find this useful, give it a star!
 </p>
+
+## How to use the chat
+
+### MCP chat mode
+
+Use the `ai_team_chat` tool when you want to discuss a problem with the AI team.
+
+Example request:
+
+```
+ai_team_chat("Help me design a login system")
+```
+
+The team will:
+1. Understand the request.
+2. Assign the right agents.
+3. Ask ChatGPT for architecture decisions.
+4. Use other agents for review/research when needed.
+5. Return the combined response.
+
+### CLI chat mode
+
+From the project directory:
+
+```
+python aiteam.py chat "your question here"
+```
+
+Examples:
+
+```
+python aiteam.py chat "Review this architecture"
+python aiteam.py chat "Explain this error"
+python aiteam.py chat "Plan a new feature"
+```
+
+### Coding tasks
+
+For tasks that require file changes, use coding mode:
+
+```
+python aiteam.py code "Add user authentication"
+```
+
+The coding agent can:
+- Read project files.
+- Plan changes.
+- Request edits.
+- Run tests.
+- Iterate on errors.
+
+### Tips
+
+- Give clear goals and constraints.
+- Include error messages when debugging.
+- Ask architecture questions before implementation for larger features.
+- Use review mode after major changes.

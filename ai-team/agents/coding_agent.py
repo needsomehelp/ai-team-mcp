@@ -48,7 +48,9 @@ You do not need the user to paste files: request them and they arrive.
 Emit one or more request lines, then stop and wait for results:
 
 <<<LIST: .>>>                      list files in a directory
-<<<READ: path/to/file.py>>>        read a file
+<<<READ: path/to/file.py>>>        read a file (large files arrive truncated with a
+                                    note like "read the rest with <<<READ: path:120-400>>>" —
+                                    use that, don't fall back to shell commands to slice it)
 <<<SEARCH: some text>>>            find which files contain some text
 <<<RUN: python -m pytest -q>>>     run a shell command in the project root
 <<<APPEND: path/to/file.md>>>      add text to the END of an existing file
@@ -92,17 +94,19 @@ Rules:
 # it is freshest, cut the wasted steps on a fix-the-bug task from 11 to 2.
 TURN_REMINDER = """
 
---- YOUR TURN (step {step} of {total}) ---
+--- YOUR TURN (step {step}) ---
 Emit request lines now. A markdown ```bash block is not parsed and does nothing —
 only <<<RUN: ...>>> reaches the harness. Do not ask the user to paste files or run
 commands; request them yourself. If the task is done AND verified, emit <<<DONE>>>."""
 
 DONE_CHALLENGE = """
-[harness] You emitted <<<DONE>>> but you have not written a single file or run a
-single command — only read things. Reading is not doing. The task is not finished.
-Make the actual change now with <<<WRITE: path>>>...<<<ENDWRITE>>>, then verify it.
-If you are certain the task genuinely requires no changes, emit <<<DONE>>> again and
-state in one line why nothing needed to change.
+[harness] You emitted <<<DONE>>> but have not written, appended or replaced anything
+in any file — reading, listing, searching and running commands (even a test suite)
+are investigation, not the change itself. If you found something to fix, make the
+actual edit now with <<<WRITE:>>>, <<<APPEND:>>> or <<<REPLACE:>>>, then verify it.
+If you are certain the task genuinely requires no code change, emit <<<DONE>>> again
+and state in one line, concretely, what you checked and why nothing needed to change
+— "no bug found" alone is not enough, name what you ruled out.
 """
 
 NO_TOOLS_NUDGE = """
@@ -112,6 +116,20 @@ emit a request line that this program will execute for you. Any output shown abo
 is genuine output the harness already produced from your earlier requests.
 Emit one now: <<<READ: file>>>, <<<LIST: .>>>, <<<RUN: cmd>>>,
 <<<WRITE: file>>>...<<<END>>>, or <<<DONE>>>.
+"""
+
+# Observed live: given a vague task ("build a chatbot"), the driver can spend
+# many turns re-listing/re-searching the repo hunting for something that isn't
+# there and never emits a WRITE. There is no step budget to enforce a decision
+# by anymore, so this fires periodically instead — often enough to break a real
+# stall, rare enough not to interrupt a task that's still legitimately exploring.
+PROGRESS_NUDGE_EVERY = 10
+PROGRESS_NUDGE = """
+[harness] {step} steps in and nothing has been written, appended, replaced or run
+yet — only read/listed/searched. If you have enough information, stop exploring
+and make the smallest concrete change that moves the task forward now with WRITE,
+APPEND, REPLACE or RUN. If you genuinely still need more information, say what
+you're still missing in one line and keep going.
 """
 
 _END = r"<<<END(?:WRITE|APPEND|REPLACE)?>>>"
@@ -125,8 +143,13 @@ ACTION_RE = re.compile(
     # Accept ENDWRITE or a bare END as the write terminator: models reliably emit
     # whichever they remember, and rejecting one silently drops the whole edit.
     r"|<<<WRITE:\s*(?P<wpath>[^>\n]+?)\s*>>>\r?\n(?P<wbody>.*?)\r?\n?" + _END +
-    r"|<<<(?P<verb>READ|LIST|RUN|SEARCH):\s*(?P<arg>[^>\n]+?)\s*>>>"
-    r"|<<<(?P<done>DONE)>>>",
+    # Closing marker tolerates 1-3 `>` — observed live: models reliably drift to
+    # `>` or `>>` instead of `>>>` on these single-line requests (never on the
+    # WRITE-family blocks above, which have their own ENDWRITE terminator). The
+    # arg pattern already excludes `>` entirely, so there is no ambiguity to lose:
+    # whatever comes after the colon ends at the first `>`, 1 of them or 3.
+    r"|<<<(?P<verb>READ|LIST|RUN|SEARCH):\s*(?P<arg>[^>\n]+?)\s*>{1,3}"
+    r"|<<<(?P<done>DONE)>{1,3}",
     re.S,
 )
 
@@ -137,18 +160,31 @@ STRAY_END_RE = re.compile(r"<<<END(?:WRITE)?>>>")
 
 # An opener that ACTION_RE could not match — almost always a RUN carrying a
 # multi-line heredoc, or a WRITE whose terminator never arrived. Silently dropping
-# these is what made runs look like the agent "did nothing".
-MALFORMED_RE = re.compile(r"<<<\s*(?:WRITE|READ|LIST|RUN|SEARCH)\b", re.I)
+# these is what made runs look like the agent "did nothing". REPLACE/APPEND are
+# included too: observed live, a model dropped the <<<OLD>>> marker from a REPLACE
+# and repeated the identical broken block for 7 steps with zero feedback that it
+# had gone nowhere.
+MALFORMED_RE = re.compile(r"<<<\s*(?:WRITE|READ|LIST|RUN|SEARCH|REPLACE|APPEND)\b", re.I)
 
 MALFORMED_NUDGE = """
 [harness] Your last message contained a request that could not be parsed, so it was
 discarded and nothing ran. The usual causes:
   - a <<<RUN: ...>>> spread over multiple lines (it must be ONE line), or
   - shell file-writing (heredoc, `cat >>`, `echo >`), which is not supported, or
-  - a <<<WRITE:>>> with no closing <<<ENDWRITE>>>.
+  - a <<<WRITE:>>> with no closing <<<ENDWRITE>>>, or
+  - a <<<REPLACE:>>> missing its <<<OLD>>> line — the shape is REPLACE header, then
+    <<<OLD>>> on its own line, then the exact old text, then <<<NEW>>>, then the new
+    text, then <<<ENDWRITE>>>. Leaving out <<<OLD>>> makes the whole block unparsable.
 To change a file, use exactly this shape and nothing else:
 <<<WRITE: path/to/file.ext>>>
 (the complete new file content)
+<<<ENDWRITE>>>
+or:
+<<<REPLACE: path/to/file.ext>>>
+<<<OLD>>>
+the exact existing text
+<<<NEW>>>
+what it becomes
 <<<ENDWRITE>>>
 """
 
@@ -158,7 +194,7 @@ _BLOCKED = (
     "shutdown", "reboot", "diskpart", "git push", "git commit", "git reset --hard",
 )
 
-MAX_OUTPUT = 4000
+MAX_OUTPUT = 8000
 
 
 class C:
@@ -170,15 +206,25 @@ class CodingAgent:
     """Runs ChatGPT in a read/write/run loop against the project."""
 
     def __init__(self, team, project_dir: str, auto_approve: bool = False,
-                 max_steps: int = 14, review: bool = True):
+                 max_steps: int = None, review: bool = True):
         self.team = team
         self.root = os.path.abspath(project_dir)
         self.auto = auto_approve
+        # None = no cap. The loop stops itself: DONE, giving up after repeated
+        # prose-only replies, or you hitting Ctrl+C. A step budget was cutting
+        # off real multi-file tasks before they could finish.
         self.max_steps = max_steps
         self.review = review
         self.changed_files = {}   # path -> (before, after)
         self._seen = {}           # repeated read/list requests -> step first served
-        self._did_work = False    # has anything beyond reading actually happened?
+        self._did_work = False    # has anything beyond reading/listing/searching happened?
+        # Separate from _did_work: a RUN that only inspects the project (pytest,
+        # git status, ...) satisfies _did_work but must NOT excuse a DONE with no
+        # edit — that let the agent declare success after purely investigating.
+        # Only a real file mutation counts here.
+        self._changed_something = False
+        self._run_seen = {}       # exact command -> (step, len(changed_files) at that time, output)
+        self._consecutive_run_repeats = 0  # circuit breaker for a stuck retry loop
 
     # ── path safety ──
 
@@ -209,16 +255,42 @@ class CodingAgent:
             out.append(f"{name}/" if os.path.isdir(full) else name)
         return "\n".join(out) or "(empty)"
 
+    # Observed live: a file too big for one READ got silently cut off mid-function,
+    # and with no way to ask for "the rest" the model fell back to shell one-liners
+    # to slice the file itself — which need a confirmation nobody was there to give,
+    # and it burned its whole step budget retrying variations of the same command.
+    _RANGE_RE = re.compile(r"^(?P<path>.+):(?P<start>\d+)(?:-(?P<end>\d+))?$")
+
     def _tool_read(self, arg: str) -> str:
-        abs_path, err = self._safe(arg)
+        path, start, end = arg, None, None
+        m = self._RANGE_RE.match(arg)
+        if m:
+            path = m.group("path")
+            start = int(m.group("start"))
+            end = int(m.group("end") or start)
+
+        abs_path, err = self._safe(path)
         if err:
             return err
         if not os.path.isfile(abs_path):
-            return f"not found: {arg}"
+            return f"not found: {path}"
         with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
+
+        if start is not None:
+            lines = text.splitlines()
+            lo, hi = max(1, start), min(len(lines), max(start, end))
+            snippet = "\n".join(lines[lo - 1:hi])
+            if len(snippet) > MAX_OUTPUT:
+                snippet = snippet[:MAX_OUTPUT] + "\n[truncated]"
+            return f"{snippet}\n[lines {lo}-{hi} of {len(lines)}]"
+
         if len(text) > MAX_OUTPUT:
-            text = text[:MAX_OUTPUT] + "\n[truncated]"
+            total_lines = text.count("\n") + 1
+            cutoff_line = text[:MAX_OUTPUT].count("\n") + 1
+            text = (text[:MAX_OUTPUT] +
+                    f"\n[truncated at line ~{cutoff_line} of {total_lines} — read the "
+                    f"rest with <<<READ: {path}:{cutoff_line}-{total_lines}>>>]")
         return text
 
     def _tool_search(self, arg: str) -> str:
@@ -305,6 +377,7 @@ class CodingAgent:
         before = self.changed_files.get(rel_path, (old, None))[0]
         self.changed_files[rel_path] = (before, new)
         self._did_work = True
+        self._changed_something = True
         print(f"  {C.GREEN}wrote {rel_path}{C.RESET}")
         return f"wrote {rel_path} ({len(new.splitlines())} lines)"
 
@@ -359,6 +432,7 @@ class CodingAgent:
         before = self.changed_files.get(rel_path, (old, None))[0]
         self.changed_files[rel_path] = (before, new)
         self._did_work = True
+        self._changed_something = True
         print(f"  {C.GREEN}{verb} {rel_path}{C.RESET}")
         return f"{verb} {rel_path} ({len(new.splitlines())} lines now)"
 
@@ -433,7 +507,32 @@ class CodingAgent:
         if verb == "SEARCH":
             print(f"  {C.DIM}search {arg!r}{C.RESET}")
             return f"SEARCH {arg}", self._tool_search(arg)
-        return f"RUN {arg}", self._tool_run(arg)
+
+        # Observed live: on a vague "find bugs" task the driver ran `pytest` five
+        # times in a row with no edits in between, each needing a fresh y/N and
+        # burning a step for a result it already had. Block an exact repeat only
+        # until something actually changes — a real re-run after an edit is still
+        # fully allowed and un-deduped.
+        run_key = arg
+        changed_count = len(self.changed_files)
+        prev = self._run_seen.get(run_key)
+        if prev is not None and prev[1] == changed_count:
+            self._consecutive_run_repeats += 1
+            print(f"  {C.YELLOW}$ {arg} (already ran with nothing changed since — "
+                  f"not repeating){C.RESET}")
+            # Observed live: without the actual prior output, the model couldn't tell
+            # this was a broken command (it had typo'd the argument order) and just
+            # retried the same dead RUN 47 times in a row instead of fixing it.
+            # Showing the failure again each time gives it something to react to.
+            return (f"RUN {arg}",
+                    f"You already ran this exact command at step {prev[0]} and no file has "
+                    f"changed since — it would give the identical result again:\n{prev[2]}\n"
+                    f"If that was an error, the fix is to change the command — repeating it "
+                    f"verbatim will not fix it. Do not send this exact command again.")
+        result = self._tool_run(arg)
+        self._run_seen[run_key] = (step, changed_count, result[:800])
+        self._consecutive_run_repeats = 0
+        return f"RUN {arg}", result
 
     def run(self, task: str) -> bool:
         # Drivers in preference order. ChatGPT is the strongest coder here but
@@ -451,18 +550,31 @@ class CodingAgent:
         print(f"  {C.DIM}{brain.name} is driving · "
               f"{'auto-approving' if self.auto else 'asking before each write/command'}{C.RESET}\n")
 
+        # Each call is judged on its own — a prior turn's edits shouldn't excuse
+        # this one from actually doing something (matters once run() is called
+        # repeatedly from a persistent chat session).
+        self._did_work = False
+        self._changed_something = False
+        self._consecutive_run_repeats = 0
+        files_before = dict(self.changed_files)
+
         transcript = ""
         finished = False
         idle_turns = 0
         done_challenged = 0
-        for step in range(1, self.max_steps + 1):
-            print(f"  {C.DIM}── step {step}/{self.max_steps}{C.RESET}")
+        step = 0
+        while self.max_steps is None or step < self.max_steps:
+            step += 1
+            step_label = f"{step}/{self.max_steps}" if self.max_steps else str(step)
+            print(f"  {C.DIM}── step {step_label}{C.RESET}")
+            if step % PROGRESS_NUDGE_EVERY == 0 and not self._did_work:
+                transcript += PROGRESS_NUDGE.format(step=step)
             prompt = f"{TOOL_PROTOCOL}{_platform_note()}\n--- TASK ---\n{task}"
             if transcript:
                 prompt += f"\n\n--- WHAT HAS HAPPENED SO FAR ---\n{transcript[-12000:]}"
             else:
                 prompt += f"\n\n--- PROJECT FILES ---\n{self._tool_list('.')}"
-            prompt += TURN_REMINDER.format(step=step, total=self.max_steps)
+            prompt += TURN_REMINDER.format(step=step)
 
             result = brain.execute(prompt, "")
             if not result.success:
@@ -507,10 +619,13 @@ class CodingAgent:
             for m in matches:
                 dispatched = self._dispatch(m, step)
                 if dispatched is None:
-                    # Reading a repo and then declaring victory is the most common
-                    # failure here. Challenge a DONE that changed and ran nothing;
-                    # accept it the second time, since some tasks need no changes.
-                    if not self._did_work and done_challenged < 2:
+                    # Investigating at length and then declaring victory without ever
+                    # touching a file is the most common failure here — running tests
+                    # or searching the repo used to count as "did work" and let this
+                    # slide through unchallenged. Only a real WRITE/APPEND/REPLACE
+                    # counts now. Challenge twice; accept on the third DONE either way,
+                    # since some tasks genuinely need no code change.
+                    if not self._changed_something and done_challenged < 2:
                         done_challenged += 1
                         premature_done = True
                     else:
@@ -531,19 +646,33 @@ class CodingAgent:
                 continue
             if finished:
                 break
+            # Circuit breaker: without a step cap, a model that latches onto a
+            # broken command (observed live: typo'd argument order, retried the
+            # same dead RUN 47 times) would otherwise run indefinitely.
+            if self._consecutive_run_repeats >= 4:
+                print(f"  {C.RED}stuck repeating the same command with no progress — "
+                      f"stopping.{C.RESET}")
+                break
         else:
             print(f"\n  {C.YELLOW}Hit the {self.max_steps}-step limit without finishing.{C.RESET}")
 
-        self._final_report(task)
+        self._final_report(task, files_before)
         return finished
 
-    def _final_report(self, task: str):
-        if not self.changed_files:
+    def _final_report(self, task: str, files_before: dict = None):
+        """Report only what THIS call changed. `files_before` is the
+        changed_files snapshot taken before this run() started, so a persistent
+        agent reused across chat turns doesn't re-show or re-review earlier
+        turns' edits every time."""
+        files_before = files_before or {}
+        turn_changes = {p: v for p, v in self.changed_files.items()
+                        if files_before.get(p) != v}
+        if not turn_changes:
             print(f"\n  {C.DIM}No files were changed.{C.RESET}\n")
             return
 
         print(f"\n  {C.BOLD}Files changed{C.RESET}")
-        for path in self.changed_files:
+        for path in turn_changes:
             print(f"    {C.GREEN}{path}{C.RESET}")
 
         reviewer = self.team.agents.get("reviewer")
@@ -552,7 +681,7 @@ class CodingAgent:
             return
 
         diff_text = ""
-        for path, (before, after) in self.changed_files.items():
+        for path, (before, after) in turn_changes.items():
             diff_text += "\n".join(difflib.unified_diff(
                 (before or "").splitlines(), (after or "").splitlines(),
                 fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="")) + "\n"

@@ -272,20 +272,26 @@ CHAT_HELP = f"""
   {C.BOLD}Commands{C.RESET}
     {C.CYAN}/help{C.RESET}              show this help
     {C.CYAN}/status{C.RESET}            which agents are online
-    {C.CYAN}/all <msg>{C.RESET}         force the whole team (research + code + review)
-    {C.CYAN}/chatgpt <msg>{C.RESET}     ask one agent directly
+    {C.CYAN}/all <msg>{C.RESET}         quick answer from the whole team, no file access
+    {C.CYAN}/chatgpt <msg>{C.RESET}     ask one agent directly, no file access
                        {C.DIM}(also /gemini, /perplexity, /review, /plan, /research){C.RESET}
-    {C.CYAN}/file <path>{C.RESET}       attach a file so the team can see your real code
+    {C.CYAN}/file <path>{C.RESET}       attach a file as extra context for the next message
     {C.CYAN}/files{C.RESET}             list attached files ({C.CYAN}/files clear{C.RESET} to drop them)
-    {C.CYAN}/review on|off{C.RESET}     Gemini auto-reviews code ChatGPT writes (default: on)
+    {C.CYAN}/review on|off{C.RESET}     Gemini auto-reviews changes each turn (default: on)
     {C.CYAN}/clear{C.RESET}             wipe the conversation history
     {C.CYAN}/exit{C.RESET}              quit
 
-  {C.BOLD}Anything else{C.RESET} is auto-routed: ChatGPT writes code and answers,
-  Gemini reviews it, Perplexity supplies current facts. Name a file in your message
-  ("check aiteam.py") and it gets read in automatically.
+  {C.BOLD}Plain messages{C.RESET} (no leading /) run the real coding-agent loop, like
+  Claude Code or Codex: it lists/reads/searches your files itself, makes the edit,
+  and can run commands to verify — no step limit, it keeps going until it's done
+  (or you Ctrl+C). It remembers which files it already read and changed for the
+  rest of the session.
 
-  {C.BOLD}File edits{C.RESET} are shown as a diff and only written after you confirm.
+  {C.BOLD}File edits and shell commands{C.RESET} are always shown to you first (diff or
+  the command line) and only run after you type y.
+
+  Use a {C.CYAN}/command{C.RESET} instead when you just want a quick opinion or answer
+  with no file access — faster, and won't touch anything.
 """
 
 # Chat runs on the three web agents only — no Claude CLI in the loop.
@@ -542,16 +548,24 @@ def cmd_chat(team: AgentTeam):
     except ImportError:
         pass
 
+    from agents.coding_agent import CodingAgent
+
     print_banner()
     status = team.get_agent_status()
     online = [AGENT_INFO[s]["label"] for s, i in AGENT_INFO.items()
               if i["role"] != "coder" and status.get(i["role"])]
     print(f"  {C.BOLD}CHAT MODE{C.RESET} {C.DIM}— type /help for commands, /exit to quit{C.RESET}")
     print(f"  {C.DIM}Online: {', '.join(online) if online else 'nobody — run: python aiteam.py status'}{C.RESET}")
-    print(f"  {C.DIM}ChatGPT codes · Gemini reviews · Perplexity researches{C.RESET}\n")
+    print(f"  {C.DIM}Plain messages read/edit/run real files (like Claude Code) — "
+          f"changes are diffed and need your yes. Use /chatgpt, /gemini, /perplexity "
+          f"for a quick answer with no file access.{C.RESET}\n")
 
     project_ctx = team.get_project_context()
     history, attached, auto_review = [], {}, True
+    # One agent instance for the whole session: it remembers which files it has
+    # already read (agents/coding_agent.py's dedup) and every file it has changed
+    # across turns, the same way Claude Code keeps context between messages.
+    agent = CodingAgent(team, team.project_dir, auto_approve=False, review=auto_review)
 
     while True:
         try:
@@ -584,6 +598,7 @@ def cmd_chat(team: AgentTeam):
                 continue
             if cmd == "review" and rest.lower() in ("on", "off"):
                 auto_review = rest.lower() == "on"
+                agent.review = auto_review
                 print(f"  {C.DIM}Gemini auto-review {'on' if auto_review else 'off'}{C.RESET}\n")
                 continue
             if cmd == "file":
@@ -628,6 +643,28 @@ def cmd_chat(team: AgentTeam):
             else:
                 print(f"  {C.RED}Unknown command: /{cmd}{C.RESET} {C.DIM}— try /help{C.RESET}\n")
                 continue
+
+        # A forced role (/chatgpt, /gemini, /all, ...) is a quick single-turn
+        # question — no file access. A plain message is a real task: run it
+        # through the same read/edit/run loop as `aiteam build`, so chat can
+        # actually check and change files instead of only talking about them.
+        if force_roles is None:
+            task = msg
+            convo = _history_context(history)
+            if convo:
+                task += f"\n\n--- CONVERSATION SO FAR ---\n{convo}"
+            if attached:
+                task += ("\n\n--- FILES THE USER ALREADY ATTACHED (read these if relevant) ---\n"
+                          + ", ".join(attached))
+            try:
+                agent.run(task)
+            except KeyboardInterrupt:
+                print(f"\n  {C.YELLOW}stopped{C.RESET}\n")
+            history.append({"who": "user", "text": msg})
+            summary = (f"changed: {', '.join(agent.changed_files)}"
+                       if agent.changed_files else "(no files changed)")
+            history.append({"who": "team", "text": summary})
+            continue
 
         try:
             _chat_turn(team, msg, history, project_ctx, attached, force_roles, auto_review)
