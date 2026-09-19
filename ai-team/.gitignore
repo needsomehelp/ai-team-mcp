@@ -1,5 +1,6 @@
 # Secrets - NEVER commit
 sessions.json
+sessions.json.*
 .env
 .env.*
 

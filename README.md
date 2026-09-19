@@ -415,3 +415,14 @@ MIT License. Free to use, modify, and distribute.
 <br>
 <a href="https://github.com/needsomehelp/ai-team-mcp/issues">Report a bug</a> · <a href="https://github.com/needsomehelp/ai-team-mcp/pulls">Submit a PR</a> · <a href="https://github.com/needsomehelp/ai-team-mcp/discussions">Discussions</a>
 </p>
+
+---
+
+## Security & Privacy
+
+**Your keys stay local.** Credentials are stored only in `sessions.json` on your machine.
+
+- **`sessions.json` is gitignored.** It is never committed to the repository.
+- **No data is sent to us.** All API calls go directly to the AI providers.
+- **No middleman.** There is no proxy server or third-party relay.
+- **Open source.** Audit every line of code yourself.

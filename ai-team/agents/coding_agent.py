@@ -148,7 +148,7 @@ ACTION_RE = re.compile(
     # WRITE-family blocks above, which have their own ENDWRITE terminator). The
     # arg pattern already excludes `>` entirely, so there is no ambiguity to lose:
     # whatever comes after the colon ends at the first `>`, 1 of them or 3.
-    r"|<<<(?P<verb>READ|LIST|RUN|SEARCH):\s*(?P<arg>[^>\n]+?)\s*>{1,3}"
+    r"|<<<(?P<verb>READ|LIST|RUN|SEARCH):\s*(?P<path>[^>\n]+?)\s*>{1,3}"
     r"|<<<(?P<done>DONE)>{1,3}",
     re.S,
 )
@@ -483,7 +483,7 @@ class CodingAgent:
         if match.group("wpath") is not None:
             path = match.group("wpath")
             return f"WRITE {path}", self._tool_write(path, match.group("wbody"))
-        verb, arg = match.group("verb").upper(), match.group("arg")
+        verb, arg = match.group("verb").upper(), match.group("path")
 
         # Re-reading an unchanged file returns identical bytes, so the transcript
         # grows without new information and the model loops on it forever. Answer

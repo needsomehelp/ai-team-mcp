@@ -106,6 +106,17 @@ class DalleRequest(BaseModel):
     quality: str = "standard"
 
 
+class VideoRequest(BaseModel):
+    prompt: str
+    model: str = ""
+    duration: int = 4
+
+
+class AudioRequest(BaseModel):
+    prompt: str
+    duration: int = 10
+
+
 @app.get("/health")
 def health():
     """Unauthenticated reachability check."""
@@ -155,6 +166,16 @@ def image_generate(req: ImageRequest):
 @app.post("/image/dalle", dependencies=[Depends(require_api_key)])
 def image_dalle(req: DalleRequest):
     return {"result": tools.generate_image_dalle(req.prompt, req.size, req.quality)}
+
+
+@app.post("/video/generate", dependencies=[Depends(require_api_key)])
+def video_generate(req: VideoRequest):
+    return {"result": tools.generate_video(req.prompt, req.model, req.duration)}
+
+
+@app.post("/audio/generate", dependencies=[Depends(require_api_key)])
+def audio_generate(req: AudioRequest):
+    return {"result": tools.generate_audio(req.prompt, req.duration)}
 
 
 if __name__ == "__main__":

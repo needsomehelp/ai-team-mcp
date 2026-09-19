@@ -95,7 +95,8 @@ class AgentTeam:
         # Full pipeline for build/implement tasks
         return ["researcher", "architect", "coder", "reviewer"]
 
-    def run_single(self, role: str, task: str, context: str = "") -> AgentResult:
+    def run_single(self, role: str, task: str, context: str = "",
+                   images: list = None) -> AgentResult:
         """Run a single agent on a task."""
         agent = self.agents.get(role)
         if not agent:
@@ -105,12 +106,18 @@ class AgentTeam:
                              f"{agent.name} not logged in. Run: python3 aiteam.py login {self._service_name(role)}")
         if not context:
             context = self.get_project_context()
-        return agent.execute(task, context)
+        return agent.execute(task, context, self._images_for(agent, images))
+
+    @staticmethod
+    def _images_for(agent, images):
+        """Attachments for agents that can see them, None for the rest -- a text-only
+        agent handed images fails outright, which would drop that whole pipeline step."""
+        return images if (images and agent.supports_images()) else None
 
     def _service_name(self, role: str) -> str:
         return {"coder": "claude", "architect": "chatgpt", "reviewer": "gemini", "researcher": "perplexity"}.get(role, role)
 
-    def run_parallel(self, tasks: dict, context: str = "") -> dict:
+    def run_parallel(self, tasks: dict, context: str = "", images: list = None) -> dict:
         """Run multiple agents in parallel."""
         if not context:
             context = self.get_project_context()
@@ -121,7 +128,8 @@ class AgentTeam:
             for role, task in tasks.items():
                 agent = self.agents.get(role)
                 if agent and agent.is_ready():
-                    futures[executor.submit(agent.execute, task, context)] = role
+                    futures[executor.submit(agent.execute, task, context,
+                                            self._images_for(agent, images))] = role
                 elif agent:
                     results[role] = AgentResult(agent.name, role, "", False,
                                               f"{agent.name} not logged in. Run: python3 aiteam.py login {self._service_name(role)}")
@@ -135,12 +143,20 @@ class AgentTeam:
 
         return results
 
-    def run_pipeline(self, task: str, context: str = "") -> list:
-        """Smart pipeline — routes to only the agents needed, passes compressed summaries between steps."""
+    def run_pipeline(self, task: str, context: str = "", images: list = None) -> list:
+        """Smart pipeline — routes to only the agents needed, passes compressed summaries between steps.
+
+        Attached images reach only the agents that can see them (ChatGPT, Gemini). The
+        text-only steps aren't left blind: what those agents report about the image is
+        folded into the enriched context the coder receives."""
         if not context:
             context = self.get_project_context()
 
         roles = self.route_task(task)
+        if images and "architect" not in roles and "reviewer" not in roles:
+            # Nothing in the routed set can see the attachment. Bring in the reviewer so
+            # the images are actually looked at rather than silently ignored.
+            roles = roles + ["reviewer"]
         pipeline_results = []
 
         # Step 1: Research + Architecture in parallel (only if routed)
@@ -149,9 +165,16 @@ class AgentTeam:
             parallel_tasks["researcher"] = f"Key facts, libraries, patterns for: {task}. Bullets only."
         if "architect" in roles:
             parallel_tasks["architect"] = f"File structure and interfaces for: {task}. Bullets only."
+            if images:
+                # The architect is one of the two agents that can see the attachment, and
+                # its output is what carries the image's content to the text-only coder.
+                parallel_tasks["architect"] += (
+                    " Base this on the attached image(s) and describe what they show, "
+                    "concretely enough for someone who cannot see them to build from it."
+                )
 
         if parallel_tasks:
-            parallel_results = self.run_parallel(parallel_tasks, context)
+            parallel_results = self.run_parallel(parallel_tasks, context, images)
             for role, label in [("researcher", "research [Perplexity]"), ("architect", "architecture [ChatGPT]")]:
                 if role in parallel_tasks:
                     pipeline_results.append((label, parallel_results.get(role)))
@@ -172,15 +195,15 @@ class AgentTeam:
         # Step 3: Gemini reviews (only if routed + code exists)
         if "reviewer" in roles and code_result and code_result.success:
             # Send full code to Gemini — truncating code means missing bugs
-            review_result = self.run_single(
-                "reviewer",
-                f"Review for bugs, security issues, and edge cases:\n{code_result.content[:6000]}",
-                "",
-            )
+            review_task = f"Review for bugs, security issues, and edge cases:\n{code_result.content[:6000]}"
+            if images:
+                review_task = (f"{task}\n\n{review_task}\n\n"
+                               "Also check the implementation against the attached image(s).")
+            review_result = self.run_single("reviewer", review_task, "", images)
             pipeline_results.append(("review [Gemini]", review_result))
         elif "reviewer" in roles and not code_result:
             # Review-only task (no coder step)
-            review_result = self.run_single("reviewer", task, context)
+            review_result = self.run_single("reviewer", task, context, images)
             pipeline_results.append(("review [Gemini]", review_result))
 
         return pipeline_results

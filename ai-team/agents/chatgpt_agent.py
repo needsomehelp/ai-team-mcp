@@ -4,7 +4,9 @@ How it works:
 - You copy your session token from browser DevTools (one time)
 - This agent sends requests to ChatGPT's internal API using that token
 - Same models you get in the browser (GPT-4o, o1, etc.)
-- Supports text responses AND image generation (DALL-E via GPT-4o)
+- Supports text responses, image generation (DALL-E via GPT-4o), and reading
+  images you attach (uploaded to your account the way the web app does, so the
+  subscription covers it -- no API credits needed)
 
 Image generation:
 - ChatGPT generates images via DALL-E internally
@@ -25,7 +27,7 @@ try:
 except ImportError:
     import requests
     _CURL_CFFI = False
-from .base import BaseAgent, AgentResult, save_temp_image, rate_limit
+from .base import BaseAgent, AgentResult, save_temp_image, rate_limit, no_image_support
 from .session_store import get_session
 
 
@@ -35,6 +37,9 @@ class ChatGPTWebAgent(BaseAgent):
     # a round-trip for a call that cannot succeed and go straight to the web path.
     # Process-lifetime only: it clears on restart, so adding credits takes effect.
     _api_quota_exhausted = False
+    # The cookies the web path actually needs; used for login feedback and for
+    # explaining a Turnstile 403.
+    KEY_COOKIES = ("cf_clearance", "oai-did", "__Secure-next-auth.session-token")
 
     def __init__(self):
         super().__init__("ChatGPT", "architect")
@@ -47,6 +52,9 @@ class ChatGPTWebAgent(BaseAgent):
         # Optional proxy to bypass IP blocks: "http://user:pass@host:port" or "socks5://host:port"
         self.proxy = session.get("proxy", "")
         self._client = None
+        # Set from the last /sentinel/chat-requirements response so a 403 on
+        # /conversation can name the real cause instead of guessing.
+        self._turnstile_required = False
 
     def _get_client(self):
         """One warmed-up Session reused for every call.
@@ -64,9 +72,13 @@ class ChatGPTWebAgent(BaseAgent):
             client = requests.Session()
         if self.proxy:
             client.proxies = {"http": self.proxy, "https": self.proxy}
-        # Seed any cookies the user supplied via `login chatgpt`.
+        # Seed any cookies the user supplied via `login chatgpt`. Pin them to
+        # chatgpt.com -- a domainless cookie is dropped across the warm-up redirect.
         for k, v in (self.cookies or {}).items():
-            client.cookies.set(k, v)
+            try:
+                client.cookies.set(k, v, domain=".chatgpt.com", path="/")
+            except TypeError:
+                client.cookies.set(k, v)  # older jars take name/value only
         try:
             # Warm-up: let the edge issue __cf_bm / oai-did before the API calls.
             client.get("https://chatgpt.com/",
@@ -74,6 +86,14 @@ class ChatGPTWebAgent(BaseAgent):
                        timeout=30)
         except Exception:
             pass  # A failed warm-up is not fatal -- the API calls may still pass.
+        # OpenAI cross-checks the oai-device-id header against the oai-did cookie.
+        # When the user supplied no cookies, adopt whatever the warm-up was issued
+        # so the header is sent and agrees with the jar, instead of being absent.
+        if not self.device_id:
+            try:
+                self.device_id = client.cookies.get_dict().get("oai-did", "") or ""
+            except Exception:
+                pass
         self._client = client
         return client
 
@@ -101,11 +121,13 @@ class ChatGPTWebAgent(BaseAgent):
         rate_limit("chatgpt", 10.0)
 
     def is_ready(self) -> bool:
-        return bool(self.access_token)
+        return bool(self.access_token or self.cookies)
+
+    def supports_images(self) -> bool:
+        return True
 
     def _headers(self, accept="text/event-stream"):
         h = {
-            "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
             "Accept": accept,
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -119,6 +141,10 @@ class ChatGPTWebAgent(BaseAgent):
             "sec-fetch-site": "same-origin",
             "oai-language": "en-US",
         }
+        # Cookie-only logins authenticate through the jar; sending an empty
+        # bearer makes OpenAI reject the request outright.
+        if self.access_token:
+            h["Authorization"] = f"Bearer {self.access_token}"
         if self.device_id:
             h["oai-device-id"] = self.device_id
         if self.build_number:
@@ -129,7 +155,10 @@ class ChatGPTWebAgent(BaseAgent):
 
     def _get_sentinel_token(self):
         """Fetch the chat-requirements token plus the proof-of-work answer that
-        /conversation now demands. Returns (requirements_token, proof_token)."""
+        /conversation now demands. Returns (requirements_token, proof_token).
+
+        Also records whether the server is asking for a Cloudflare Turnstile
+        token, which this client cannot produce -- see _get_error_msg."""
         try:
             resp = self._get_client().post(
                 f"{self.BASE_URL}/sentinel/chat-requirements",
@@ -139,6 +168,8 @@ class ChatGPTWebAgent(BaseAgent):
             )
             if resp.status_code == 200:
                 data = resp.json()
+                self._turnstile_required = bool(
+                    (data.get("turnstile") or {}).get("required"))
                 proof = ""
                 pow_req = data.get("proofofwork") or {}
                 if pow_req.get("required"):
@@ -168,16 +199,40 @@ class ChatGPTWebAgent(BaseAgent):
         if response.status_code == 401:
             return "Session expired. Run: python3 aiteam.py login chatgpt"
         if response.status_code == 403:
-            # /conversation answers 403 with an empty body when the sentinel
-            # challenge wasn't satisfied. chat-requirements now returns
-            # proofofwork.required and turnstile.required; the turnstile token can
-            # only be produced by running Cloudflare's JS in a real browser, so
-            # this path cannot be completed from plain Python.
+            # /conversation answers 403 with an empty body when the sentinel challenge
+            # wasn't satisfied. Two very different causes hide behind that: a Turnstile
+            # demand is a hard stop for an HTTP client, while everything else is
+            # usually a stale session that a fresh token or cookies will fix.
+            if self._turnstile_required:
+                have = sorted(self.cookies or {})
+                missing = [c for c in self.KEY_COOKIES if c not in (self.cookies or {})]
+                msg = (
+                    "ChatGPT web API returned 403: the sentinel demanded a Cloudflare "
+                    "Turnstile token (turnstile.required=true). This client cannot "
+                    "generate one -- the challenge only runs in a real browser. Your "
+                    "access token is NOT the problem, so refreshing it will not help."
+                )
+                if missing:
+                    msg += ("\nNo browser cookies are configured for ChatGPT"
+                            if not have else
+                            f"\nConfigured cookies: {', '.join(have)}")
+                    msg += (f". Add the missing ones ({', '.join(missing)}) from a "
+                            "logged-in chatgpt.com tab (DevTools > Application > "
+                            "Cookies) with ai_team_login(service='chatgpt', "
+                            "token='<Cookie header string>') -- a warmed browser "
+                            "session often drops the Turnstile demand.")
+                else:
+                    msg += (f"\nAll key cookies are set ({', '.join(have)}) but Turnstile "
+                            "is still enforced, so they have most likely expired -- "
+                            "re-copy them from a logged-in chatgpt.com tab. Otherwise "
+                            "use the OpenAI API path (needs credits at "
+                            "platform.openai.com).")
+                return msg
             return (
                 "ChatGPT web API returned 403 (sentinel challenge not satisfied). "
-                "chatgpt.com now requires a proof-of-work + Cloudflare turnstile token "
-                "that can only be produced by a real browser, so the web path is unavailable. "
-                "Use an OpenAI API key with credits instead."
+                "This usually means the session token expired or the warm-up request "
+                "was blocked. Refresh it: go to https://chatgpt.com/api/auth/session, "
+                "copy accessToken, then ai_team_login(service='chatgpt', token='...')."
             )
         return f"HTTP {response.status_code} error from ChatGPT"
 
@@ -210,6 +265,49 @@ class ChatGPTWebAgent(BaseAgent):
             pass
         # Fallback: direct estuary content URL (used by ChatGPT web app)
         return f"{self.BASE_URL}/estuary/content?id={clean_id}"
+
+    _IMAGE_EXTS = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+        "image/gif": "gif",
+    }
+
+    def _download_image(self, url: str):
+        """Fetch image bytes for a resolved asset URL. Returns (bytes, ext) or None.
+
+        chatgpt.com asset URLs are only readable with this session's Authorization
+        header and cookies, so the download has to happen here. Handing the raw URL
+        back to the caller just yields a 403 anywhere outside this process, which
+        looks like the image was never generated when in fact it was."""
+        try:
+            if "chatgpt.com" in url or "oaiusercontent.com" in url:
+                resp = self._get_client().get(
+                    url, headers=self._headers(accept="image/*"), timeout=60)
+            else:
+                # Third-party blob host (e.g. DALL-E API URLs) -- do NOT send the
+                # session bearer to a host that has no business seeing it.
+                import requests as std_requests
+                resp = std_requests.get(url, timeout=60)
+            if resp.status_code != 200 or not resp.content:
+                return None
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            return resp.content, self._IMAGE_EXTS.get(ctype, "png")
+        except Exception:
+            return None
+
+    def _image_lines(self, urls: list) -> list:
+        """Turn resolved asset URLs into display lines, saving each one locally when
+        it can be fetched. Falls back to the bare URL so a download failure still
+        surfaces something instead of dropping the image entirely."""
+        lines = []
+        for u in urls:
+            got = self._download_image(u)
+            if got:
+                lines.append(f"Saved to: {save_temp_image(got[0], got[1])}")
+            else:
+                lines.append(f"Image URL: {u}")
+        return lines
 
     def _parse_sse_stream(self, response):
         """Parse the SSE stream, collecting text and resolving image URLs."""
@@ -272,17 +370,107 @@ class ChatGPTWebAgent(BaseAgent):
             "Content-Type": "application/json",
         }
 
-    def _send_conversation(self, prompt: str, model: str = "auto") -> "requests.Response":
-        """Send a message via ChatGPT web (session token path) and return the streaming response."""
+    def _upload_image(self, img: dict):
+        """Upload one image to ChatGPT's own file store. Returns (file_id, error).
+
+        Three steps, same as the web app: register the file, PUT the bytes to the
+        blob URL it hands back, then confirm. This is what makes images work on a
+        Plus/Pro subscription -- no API credits are involved."""
+        import requests as std_requests
+        client = self._get_client()
+        try:
+            reg = client.post(
+                f"{self.BASE_URL}/files",
+                headers=self._headers(accept="application/json"),
+                json={
+                    "file_name": img["name"],
+                    "file_size": len(img["data"]),
+                    "use_case": "multimodal",
+                    "timezone_offset_min": -330,
+                    "reset_rate_limits": False,
+                },
+                timeout=60,
+            )
+            if reg.status_code != 200:
+                return "", f"file registration failed ({reg.status_code}): {self._get_error_msg(reg)}"
+            data = reg.json()
+            file_id, upload_url = data.get("file_id", ""), data.get("upload_url", "")
+            if not file_id or not upload_url:
+                return "", f"no upload URL returned for {img['name']}"
+
+            # The blob host is Azure, not OpenAI -- send the bytes with no bearer token.
+            put = std_requests.put(
+                upload_url,
+                data=img["data"],
+                headers={
+                    "Content-Type": img["mime"],
+                    "x-ms-blob-type": "BlockBlob",
+                    "x-ms-version": "2020-04-08",
+                },
+                timeout=180,
+            )
+            if put.status_code not in (200, 201):
+                return "", f"blob upload failed ({put.status_code}) for {img['name']}"
+
+            conf = client.post(
+                f"{self.BASE_URL}/files/{file_id}/uploaded",
+                headers=self._headers(accept="application/json"),
+                json={},
+                timeout=60,
+            )
+            if conf.status_code != 200:
+                return "", f"upload confirmation failed ({conf.status_code}) for {img['name']}"
+            return file_id, ""
+        except Exception as e:
+            return "", f"{img['name']}: {self._error_text(e)}"
+
+    def _send_conversation(self, prompt: str, model: str = "auto",
+                           images: list = None) -> "requests.Response":
+        """Send a message via ChatGPT web (session token path) and return the streaming response.
+
+        `images` must be the (file_id, image) pairs returned by _upload_image."""
         self._rate_limit()
         sentinel, proof = self._get_sentinel_token()
+
+        message = {
+            "id": str(uuid.uuid4()),
+            "author": {"role": "user"},
+            "content": {"content_type": "text", "parts": [prompt]},
+        }
+        if images:
+            # Attached images become image_asset_pointer parts ahead of the prompt text,
+            # and must ALSO be declared in metadata.attachments -- without that the
+            # conversation renders the pointer but the model is never shown the image.
+            message["content"] = {
+                "content_type": "multimodal_text",
+                "parts": [
+                    {
+                        "content_type": "image_asset_pointer",
+                        "asset_pointer": f"file-service://{file_id}",
+                        "size_bytes": len(img["data"]),
+                        "width": img["width"],
+                        "height": img["height"],
+                    }
+                    for file_id, img in images
+                ] + [prompt],
+            }
+            message["metadata"] = {
+                "attachments": [
+                    {
+                        "id": file_id,
+                        "name": img["name"],
+                        "size": len(img["data"]),
+                        "mimeType": img["mime"],
+                        "width": img["width"],
+                        "height": img["height"],
+                    }
+                    for file_id, img in images
+                ]
+            }
+
         payload = {
             "action": "next",
-            "messages": [{
-                "id": str(uuid.uuid4()),
-                "author": {"role": "user"},
-                "content": {"content_type": "text", "parts": [prompt]},
-            }],
+            "messages": [message],
             "parent_message_id": str(uuid.uuid4()),
             "model": model,
             "timezone_offset_min": -330,
@@ -302,6 +490,21 @@ class ChatGPTWebAgent(BaseAgent):
             timeout=180,
         )
 
+    @staticmethod
+    def _vision_message(prompt: str, images: list) -> dict:
+        """Build a chat/completions user message carrying images alongside the text.
+
+        Images are inlined as data: URIs rather than links -- the files are local, and
+        the API fetches http(s) image_urls from its own side, which cannot reach them."""
+        content = [{"type": "text", "text": prompt}]
+        for img in images:
+            b64 = base64.b64encode(img["data"]).decode()
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime']};base64,{b64}"},
+            })
+        return {"role": "user", "content": content}
+
     def _call_api(self, messages: list, model: str = "gpt-4o", max_tokens: int = 1000) -> str:
         """Call OpenAI API directly — only works with a real sk-... API key."""
         import requests as std_requests
@@ -317,12 +520,19 @@ class ChatGPTWebAgent(BaseAgent):
             # A ChatGPT Plus/Pro subscription does NOT include API quota -- the JWT
             # authenticates fine here and then fails on billing. Say so, because
             # "429" on its own reads as rate limiting and sends you chasing retries.
-            code = ""
+            #
+            # Check `type` as well as `code`: an exhausted balance reports
+            # type=insufficient_quota with code=credit_balance_exhausted, so matching
+            # on code alone misreads it as ordinary rate limiting -- which both hides
+            # the real cause and defeats the _api_quota_exhausted short-circuit, so
+            # every later call pays another doomed round-trip.
+            code = quota_type = ""
             try:
-                code = resp.json().get("error", {}).get("code", "")
+                err = resp.json().get("error", {})
+                code, quota_type = err.get("code", ""), err.get("type", "")
             except Exception:
                 pass
-            if code == "insufficient_quota":
+            if "insufficient_quota" in (code, quota_type) or code == "credit_balance_exhausted":
                 raise Exception(
                     "OpenAI API has no credits on this account (insufficient_quota). "
                     "A ChatGPT Plus/Pro subscription does not include API quota -- "
@@ -407,7 +617,7 @@ class ChatGPTWebAgent(BaseAgent):
             response.raise_for_status()
             text, image_urls = self._parse_sse_stream(response)
             if image_urls:
-                lines = ([text] if text else []) + [f"Image URL: {u}" for u in image_urls]
+                lines = ([text] if text else []) + self._image_lines(image_urls)
                 return AgentResult(self.name, self.role, "\n".join(lines), True)
             if text:
                 return AgentResult(self.name, self.role, text, False,
@@ -417,6 +627,66 @@ class ChatGPTWebAgent(BaseAgent):
         except Exception as e:
             return AgentResult(self.name, self.role, "", False, str(e))
 
+    def _execute_vision(self, full_prompt: str, images: list) -> AgentResult:
+        """Answer a prompt with images attached.
+
+        Subscription (web upload) first and API second -- the reverse of the text path.
+        A Plus/Pro plan includes image chat but grants no API quota, so trying the API
+        first would fail on billing for the exact case this is meant to serve."""
+        # --- Path 1: real sk-... API key. Has quota by definition; skip the uploads. ---
+        if self._is_api_key():
+            try:
+                text = self._call_api([self._vision_message(full_prompt, images)])
+                return AgentResult(self.name, self.role, text, True)
+            except Exception as e:
+                return AgentResult(self.name, self.role, "", False, self._error_text(e))
+
+        # --- Path 2: subscription session -- upload to chatgpt.com, then converse. ---
+        uploaded, upload_errors = [], []
+        for img in images:
+            file_id, err = self._upload_image(img)
+            if file_id:
+                uploaded.append((file_id, img))
+            else:
+                upload_errors.append(err)
+
+        if uploaded:
+            try:
+                response = self._send_conversation(full_prompt, model="auto", images=uploaded)
+                if response.status_code in (401, 403):
+                    return AgentResult(self.name, self.role, "", False,
+                                       self._get_error_msg(response))
+                response.raise_for_status()
+                text, image_urls = self._parse_sse_stream(response)
+                # Asking for a NEW image from an attached reference usually comes back
+                # as image parts with no prose at all. Keying success off `text` alone
+                # threw those away and reported an empty response -- the one case where
+                # the attachment worked perfectly.
+                if text or image_urls:
+                    if upload_errors:
+                        text += "\n\n[some images were not sent: " + "; ".join(upload_errors) + "]"
+                    if image_urls:
+                        text += ("\n" if text else "") + "\n".join(self._image_lines(image_urls))
+                    return AgentResult(self.name, self.role, text, True)
+                upload_errors.append("ChatGPT returned an empty response")
+            except Exception as e:
+                upload_errors.append(self._error_text(e))
+
+        # --- Path 3: JWT against the API. Last resort: it needs API credits, which a
+        # subscription does not provide, so it usually fails on billing. ---
+        if self._is_jwt_token() and not ChatGPTWebAgent._api_quota_exhausted:
+            try:
+                text = self._call_api([self._vision_message(full_prompt, images)])
+                return AgentResult(self.name, self.role, text, True)
+            except Exception as e:
+                api_error = self._error_text(e)
+                if "insufficient_quota" in api_error:
+                    ChatGPTWebAgent._api_quota_exhausted = True
+                upload_errors.append(f"OpenAI API path also failed: {api_error}")
+
+        return AgentResult(self.name, self.role, "", False,
+                           "ChatGPT could not read the image(s). " + "; ".join(upload_errors))
+
     @staticmethod
     def _error_text(e: Exception) -> str:
         """Human-readable error. A bare requests Timeout stringifies to '' (curl_cffi and
@@ -425,15 +695,27 @@ class ChatGPTWebAgent(BaseAgent):
             return "Request to ChatGPT timed out. Try again in a moment."
         return str(e) or type(e).__name__
 
-    def execute(self, prompt: str, context: str = "") -> AgentResult:
+    def execute(self, prompt: str, context: str = "", images: list = None) -> AgentResult:
         if not self.is_ready():
             return AgentResult(self.name, self.role, "", False,
                              "ChatGPT not logged in. Run: python3 aiteam.py login chatgpt")
 
-        full_prompt = self.build_prompt(
-            prompt, context,
-            "Design clean architecture. Plan file structure, data flow, and interfaces. Think step by step."
+        role_instruction = (
+            "Design clean architecture. Plan file structure, data flow, and interfaces. "
+            "Think step by step."
         )
+        if images:
+            names = ", ".join(img["name"] for img in images)
+            role_instruction = (
+                f"{len(images)} image(s) are attached ({names}). Examine them closely and "
+                "answer the task about what you actually see in them."
+            )
+
+        if images:
+            return self._execute_vision(
+                self.build_prompt(prompt, context, role_instruction), images)
+
+        full_prompt = self.build_prompt(prompt, context, role_instruction)
 
         # --- Path 1: sk-... real API key (no web session fallback possible) ---
         if self._is_api_key():
@@ -471,7 +753,7 @@ class ChatGPTWebAgent(BaseAgent):
             response.raise_for_status()
             text, image_urls = self._parse_sse_stream(response)
             if image_urls:
-                url_block = "\n".join(f"Image URL: {u}" for u in image_urls)
+                url_block = "\n".join(self._image_lines(image_urls))
                 combined = f"{text}\n\n{url_block}".strip() if text else url_block
                 return AgentResult(self.name, self.role, combined, True)
             if text:

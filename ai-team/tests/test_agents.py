@@ -500,6 +500,411 @@ class TestMCPTools:
         assert "Unknown service" in result
 
 
+# ── Image input (vision) ─────────────────────────────────────
+
+class TestLoadImages:
+    """These bytes get uploaded to a third-party model, so the content check is the
+    load-bearing part: only real images may leave the machine."""
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+    def _png(self, tmp_path, name="shot.png"):
+        p = tmp_path / name
+        p.write_bytes(self.PNG)
+        return str(p)
+
+    def test_loads_a_real_image(self, tmp_path):
+        from agents.base import load_images
+        images, notes = load_images([self._png(tmp_path)])
+        assert notes == []
+        assert len(images) == 1
+        assert images[0]["mime"] == "image/png"
+        assert images[0]["name"] == "shot.png"
+        assert images[0]["data"] == self.PNG
+
+    def test_sniffs_content_not_extension(self, tmp_path):
+        """A secrets file renamed to .png must not be uploaded."""
+        from agents.base import load_images
+        fake = tmp_path / "totally_an_image.png"
+        fake.write_text("OPENAI_API_KEY=sk-secret")
+        images, notes = load_images([str(fake)])
+        assert images == []
+        assert "not a PNG/JPEG/GIF/WEBP image" in notes[0]
+
+    def test_detects_jpeg_with_wrong_extension(self, tmp_path):
+        from agents.base import load_images
+        p = tmp_path / "photo.txt"
+        p.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+        images, _ = load_images([str(p)])
+        assert len(images) == 1 and images[0]["mime"] == "image/jpeg"
+
+    def test_oversized_image_is_skipped(self, tmp_path):
+        from agents.base import load_images, MAX_IMAGE_BYTES
+        big = tmp_path / "big.png"
+        big.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * MAX_IMAGE_BYTES)
+        images, notes = load_images([str(big)])
+        assert images == []
+        assert "exceeds" in notes[0]
+
+    def test_missing_file_is_reported_not_raised(self, tmp_path):
+        from agents.base import load_images
+        images, notes = load_images([str(tmp_path / "nope.png")])
+        assert images == []
+        assert "not found" in notes[0]
+
+    def test_caps_the_number_of_images(self, tmp_path):
+        from agents.base import load_images, MAX_IMAGES
+        paths = [self._png(tmp_path, f"s{i}.png") for i in range(MAX_IMAGES + 2)]
+        images, notes = load_images(paths)
+        assert len(images) == MAX_IMAGES
+        assert len(notes) == 2
+
+    def test_empty_input_is_harmless(self):
+        from agents.base import load_images
+        assert load_images(None) == ([], [])
+        assert load_images([]) == ([], [])
+
+
+class TestAgentsWithoutVision:
+    """Agents that can't send images must say so — an answer that never saw the
+    screenshot but doesn't admit it is worse than an error."""
+
+    IMG = [{"path": "x.png", "name": "x.png", "data": b"", "mime": "image/png",
+            "ext": "png", "width": 1, "height": 1}]
+
+    def test_perplexity_reports_no_image_support(self):
+        from agents.perplexity_agent import PerplexityWebAgent
+        r = PerplexityWebAgent().execute("what is this", images=self.IMG)
+        assert r.success is False
+        assert "cannot accept image input" in r.error
+
+    def test_claude_cli_reports_no_image_support(self):
+        from agents.claude_agent import ClaudeAgent
+        r = ClaudeAgent().execute("what is this", images=self.IMG)
+        assert r.success is False
+        assert "cannot accept image input" in r.error
+
+
+class TestImageSize:
+    """ChatGPT's upload API needs real pixel dimensions; zeros make it ignore the image."""
+
+    def test_png_dimensions(self):
+        import struct, zlib
+        from agents.base import image_size
+        def chunk(tag, data):
+            c = tag + data
+            return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c))
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", 320, 240, 8, 2, 0, 0, 0)))
+        assert image_size(png) == (320, 240)
+
+    def test_gif_dimensions(self):
+        import struct
+        from agents.base import image_size
+        assert image_size(b"GIF89a" + struct.pack("<HH", 64, 48)) == (64, 48)
+
+    def test_jpeg_dimensions_from_sof(self):
+        import struct
+        from agents.base import image_size
+        # SOI, a padding segment, then SOF0 carrying height/width.
+        jpeg = (b"\xff\xd8\xff\xe0" + struct.pack(">H", 4) + b"\x00\x00"
+                + b"\xff\xc0" + struct.pack(">H", 11) + b"\x08"
+                + struct.pack(">HH", 200, 150) + b"\x00\x00\x00")
+        assert image_size(jpeg) == (150, 200)
+
+    def test_unknown_bytes_are_zero_not_an_exception(self):
+        from agents.base import image_size
+        assert image_size(b"not an image at all") == (0, 0)
+        assert image_size(b"") == (0, 0)
+
+
+class TestChatGPTVision:
+    """Images must ride the Plus/Pro subscription (web upload), not API credits."""
+
+    IMG = {"path": "x.png", "name": "x.png", "data": b"PNGBYTES",
+           "mime": "image/png", "ext": "png", "width": 320, "height": 240}
+
+    def _agent(self):
+        from agents.chatgpt_agent import ChatGPTWebAgent
+        agent = ChatGPTWebAgent()
+        agent.access_token = "eyJfake"
+        return agent
+
+    def test_subscription_upload_is_tried_before_the_api(self):
+        agent = self._agent()
+        stream = MagicMock()
+        stream.status_code = 200
+
+        with patch.object(agent, "_upload_image", return_value=("file-123", "")) as up, \
+             patch.object(agent, "_send_conversation", return_value=stream) as send, \
+             patch.object(agent, "_parse_sse_stream", return_value=("Magenta", [])), \
+             patch.object(agent, "_call_api") as api:
+            result = agent.execute("what colour?", images=[self.IMG])
+
+        assert result.success is True
+        assert result.content == "Magenta"
+        up.assert_called_once()
+        # The billing-limited API path must not be touched when the upload works.
+        api.assert_not_called()
+        assert send.call_args.kwargs["images"] == [("file-123", self.IMG)]
+
+    def test_attachment_metadata_accompanies_the_pointer(self):
+        """The asset pointer alone renders the image but never shows it to the model."""
+        agent = self._agent()
+        captured = {}
+
+        def fake_post(url, headers=None, json=None, stream=None, timeout=None):
+            captured["payload"] = json
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+        with patch.object(agent, "_rate_limit"), \
+             patch.object(agent, "_get_sentinel_token", return_value=("t", "p")), \
+             patch.object(agent, "_get_client") as client:
+            client.return_value.post.side_effect = fake_post
+            agent._send_conversation("look", images=[("file-123", self.IMG)])
+
+        message = captured["payload"]["messages"][0]
+        assert message["content"]["content_type"] == "multimodal_text"
+        pointer = message["content"]["parts"][0]
+        assert pointer["asset_pointer"] == "file-service://file-123"
+        assert (pointer["width"], pointer["height"]) == (320, 240)
+        assert message["content"]["parts"][-1] == "look"
+        attachment = message["metadata"]["attachments"][0]
+        assert attachment["id"] == "file-123"
+        assert attachment["mimeType"] == "image/png"
+
+    def test_upload_failure_surfaces_instead_of_answering_blind(self):
+        agent = self._agent()
+        from agents.chatgpt_agent import ChatGPTWebAgent
+        ChatGPTWebAgent._api_quota_exhausted = True  # no API credits, as on a Plus plan
+        try:
+            with patch.object(agent, "_upload_image", return_value=("", "blob upload failed (500)")):
+                result = agent.execute("what colour?", images=[self.IMG])
+        finally:
+            ChatGPTWebAgent._api_quota_exhausted = False
+
+        assert result.success is False
+        assert "could not read the image" in result.error
+        assert "blob upload failed" in result.error
+
+    def test_api_key_path_inlines_data_uris(self):
+        import base64
+        agent = self._agent()
+        agent.access_token = "sk-realkey"
+        captured = {}
+
+        def fake_call_api(messages, **kw):
+            captured["messages"] = messages
+            return "I see magenta."
+
+        with patch.object(agent, "_call_api", side_effect=fake_call_api), \
+             patch.object(agent, "_upload_image") as up:
+            result = agent.execute("what colour?", images=[self.IMG])
+
+        assert result.success is True
+        # A real API key has quota, so the upload round-trips are pointless.
+        up.assert_not_called()
+        content = captured["messages"][0]["content"]
+        assert content[0]["type"] == "text"
+        expected = "data:image/png;base64," + base64.b64encode(b"PNGBYTES").decode()
+        assert content[1]["image_url"]["url"] == expected
+
+
+class TestGeminiVision:
+    def test_images_are_passed_to_the_uploader(self, tmp_path):
+        """The cookie/subscription path must hand the file to generate_content."""
+        from agents.gemini_agent import GeminiWebAgent
+        p = tmp_path / "shot.png"
+        p.write_bytes(b"\x89PNG\r\n\x1a\n")
+        images = [{"path": str(p), "name": "shot.png", "data": b"",
+                   "mime": "image/png", "ext": "png"}]
+
+        agent = GeminiWebAgent()
+        agent.cookies = {"__Secure-1PSID": "x"}
+        agent.secure_1psid = "x"
+
+        captured = {}
+
+        class FakeResponse:
+            text = "I see a red square."
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+            async def init(self, **kw):
+                pass
+            async def generate_content(self, prompt, files=None, **kw):
+                captured["files"] = files
+                captured["prompt"] = prompt
+                return FakeResponse()
+            async def close(self):
+                pass
+
+        fake_module = MagicMock()
+        fake_module.GeminiClient = FakeClient
+        with patch.dict("sys.modules", {"gemini_webapi": fake_module}):
+            result = agent.execute("What is in this image?", images=images)
+
+        assert result.success is True
+        assert captured["files"] == [str(p)]
+        assert "shot.png" in captured["prompt"]
+
+    def test_no_images_sends_files_as_none(self, tmp_path):
+        """An empty list must not be passed through as files=[]."""
+        from agents.gemini_agent import GeminiWebAgent
+        agent = GeminiWebAgent()
+        agent.cookies = {"__Secure-1PSID": "x"}
+        agent.secure_1psid = "x"
+        captured = {}
+
+        class FakeResponse:
+            text = "hello"
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+            async def init(self, **kw):
+                pass
+            async def generate_content(self, prompt, files=None, **kw):
+                captured["files"] = files
+                return FakeResponse()
+            async def close(self):
+                pass
+
+        fake_module = MagicMock()
+        fake_module.GeminiClient = FakeClient
+        with patch.dict("sys.modules", {"gemini_webapi": fake_module}):
+            agent.execute("hi")
+        assert captured["files"] is None
+
+    def test_api_path_encodes_inline_data(self, tmp_path):
+        """The API-key path must send inline_data parts before the text part."""
+        import base64
+        from agents.gemini_agent import GeminiWebAgent
+        agent = GeminiWebAgent()
+        agent.api_key = "test-key"
+        agent.secure_1psid = ""
+        images = [{"path": "x.png", "name": "x.png", "data": b"IMGBYTES",
+                   "mime": "image/png", "ext": "png"}]
+
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["payload"] = json
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
+            }
+            return resp
+
+        with patch("agents.gemini_agent.requests.post", side_effect=fake_post):
+            result = agent.execute("describe", images=images)
+
+        assert result.success is True
+        parts = captured["payload"]["contents"][0]["parts"]
+        assert parts[0]["inline_data"]["mime_type"] == "image/png"
+        assert parts[0]["inline_data"]["data"] == base64.b64encode(b"IMGBYTES").decode()
+        assert "text" in parts[-1]
+
+
+class TestPerplexityResponseParsing:
+    """The subscription (cookie) path returns a nested `blocks` envelope. Reading only
+    the old flat keys yielded an empty answer and dumped the whole raw dict as if it
+    had succeeded."""
+
+    def _parse(self, response):
+        from agents.perplexity_agent import PerplexityWebAgent
+        return PerplexityWebAgent._parse_response(response)
+
+    def test_parses_the_nested_blocks_shape(self):
+        answer, sources = self._parse({
+            "blocks": [
+                {"intended_usage": "ask_text",
+                 "markdown_block": {"progress": "DONE", "chunks": ["OK"], "answer": "OK"}},
+                {"intended_usage": "web_results",
+                 "web_result_block": {"web_results": [{"name": "Docs", "url": "https://x.dev"}]}},
+            ],
+        })
+        assert answer == "OK"
+        assert sources[0]["url"] == "https://x.dev"
+
+    def test_falls_back_to_streamed_chunks(self):
+        answer, _ = self._parse({
+            "blocks": [{"markdown_block": {"chunks": ["Hel", "lo"]}}],
+        })
+        assert answer == "Hello"
+
+    def test_still_reads_the_old_flat_shape(self):
+        answer, sources = self._parse({
+            "answer": "flat answer",
+            "web_results": [{"name": "Old", "url": "https://old.dev"}],
+        })
+        assert answer == "flat answer"
+        assert sources[0]["url"] == "https://old.dev"
+
+    def test_unrecognised_shape_yields_nothing_to_report(self):
+        answer, sources = self._parse({"backend_uuid": "abc", "blocks": []})
+        assert answer == ""
+        assert sources == []
+
+    def test_unparseable_response_fails_instead_of_dumping_raw_json(self):
+        from agents.perplexity_agent import PerplexityWebAgent
+        agent = PerplexityWebAgent()
+        agent.cookies = {"session": "x"}
+        fake_client = MagicMock()
+        fake_client.Client.return_value.search.return_value = {"backend_uuid": "abc"}
+        with patch.dict("sys.modules", {"perplexity": fake_client}):
+            result = agent._execute_web("hi")
+        assert result.success is False
+        assert "backend_uuid" not in result.error
+
+
+class TestTeamImageRouting:
+    """A screenshot must not take out the text-only steps of the pipeline."""
+
+    IMG = [{"path": "x.png", "name": "x.png", "data": b"PNGBYTES",
+            "mime": "image/png", "ext": "png", "width": 10, "height": 10}]
+
+    def _team(self):
+        from agents.team import AgentTeam
+        team = AgentTeam(".")
+        for agent in team.agents.values():
+            agent.execute = MagicMock(
+                return_value=AgentResult(agent.name, "x", "done", True))
+            agent.is_ready = MagicMock(return_value=True)
+        return team
+
+    def test_only_vision_agents_receive_images(self):
+        team = self._team()
+        team.run_parallel({"architect": "design", "researcher": "research"},
+                          "ctx", self.IMG)
+        # ChatGPT sees images; Perplexity is text-only and must get None.
+        assert team.agents["architect"].execute.call_args[0][2] == self.IMG
+        assert team.agents["researcher"].execute.call_args[0][2] is None
+
+    def test_text_only_agent_gets_none_via_run_single(self):
+        team = self._team()
+        team.run_single("coder", "build it", "ctx", self.IMG)
+        assert team.agents["coder"].execute.call_args[0][2] is None
+
+    def test_reviewer_is_added_when_nothing_routed_can_see(self):
+        """'fix ...' routes to coder+reviewer; 'research ...' routes to researcher only,
+        which would silently ignore an attached image."""
+        team = self._team()
+        results = team.run_pipeline("research the latest caching libraries", "ctx", self.IMG)
+        labels = [label for label, _ in results]
+        assert any("Gemini" in l for l in labels)
+        assert team.agents["reviewer"].execute.call_args[0][2] == self.IMG
+
+    def test_no_images_leaves_routing_untouched(self):
+        team = self._team()
+        results = team.run_pipeline("research the latest caching libraries", "ctx")
+        assert [l for l, _ in results] == ["research [Perplexity]"]
+
+
 # ── Coding agent safety ──────────────────────────────────────
 
 class TestCodingAgentGuards:

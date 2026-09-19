@@ -2,7 +2,7 @@
 Each agent is a separate Claude instance with a specialized system prompt."""
 
 import subprocess
-from .base import BaseAgent, AgentResult
+from .base import BaseAgent, AgentResult, no_image_support
 
 ROLE_PROMPTS = {
     "coder": (
@@ -57,8 +57,13 @@ class ClaudeAgent(BaseAgent):
         claude = self._find_claude()
         return os.path.exists(claude)
 
-    def execute(self, prompt: str, context: str = "") -> AgentResult:
+    def execute(self, prompt: str, context: str = "", images: list = None) -> AgentResult:
         import os
+        if images:
+            # `claude -p` takes a text prompt on argv -- there's no attachment channel,
+            # and the calling Claude can read the file itself anyway.
+            return AgentResult(self.name, self.role, "", False,
+                               no_image_support(self.name, "the Claude CLI takes text prompts only"))
         full_prompt = self.build_prompt(prompt, context, self.system_prompt)
         try:
             claude = self._find_claude()

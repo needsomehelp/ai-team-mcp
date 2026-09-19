@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.fastmcp import FastMCP
 
 from agents.session_store import save_session, get_session
-from agents.base import read_files_for_context, save_temp_image
+from agents.base import read_files_for_context, save_temp_image, load_images
 from agents.claude_agent import ClaudeAgent
 import agents.chatgpt_agent as _chatgpt_module
 from agents.chatgpt_agent import ChatGPTWebAgent
@@ -95,28 +95,61 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
     For Perplexity: browser DevTools → Network → click any perplexity.ai request → copy the Cookie header value as token. Or paste all cookies as JSON dict."""
     if service == "chatgpt":
         import json as _json
+        from agents.chatgpt_agent import ChatGPTWebAgent
         existing = get_session("chatgpt")
-        # Try as JSON cookies dict
-        try:
-            cookies = _json.loads(token)
-            if isinstance(cookies, dict):
-                existing["cookies"] = cookies
-                save_session("chatgpt", existing)
-                return f"ChatGPT logged in with {len(cookies)} browser cookies! You can now use ask_chatgpt."
-        except (ValueError, TypeError):
-            pass
-        # Try as cookie header string (name1=val1; name2=val2; ...)
-        if ";" in token and "=" in token:
-            from agents.perplexity_agent import parse_cookie_string
-            cookies = parse_cookie_string(token)
-            if cookies:
-                existing["cookies"] = cookies
-                save_session("chatgpt", existing)
-                return f"ChatGPT logged in with {len(cookies)} browser cookies! You can now use ask_chatgpt."
+
+        def _as_cookies(raw):
+            """Read a JSON dict or a `name=val; name2=val2` Cookie header.
+            Returns {} for anything else, e.g. a bare access token."""
+            if not raw:
+                return {}
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, dict):
+                    return {str(k): str(v) for k, v in parsed.items()}
+            except (ValueError, TypeError):
+                pass
+            if ";" in raw and "=" in raw:
+                from agents.perplexity_agent import parse_cookie_string
+                return parse_cookie_string(raw) or {}
+            return {}
+
+        cookies = _as_cookies(token)
+        # token2 lets one call carry both halves, in either order: whichever
+        # argument doesn't parse as cookies is taken as the access token.
+        extra = _as_cookies(token2)
+        if extra:
+            cookies = {**cookies, **extra}
+        elif token2:
+            existing["access_token"] = token2
+        if cookies and not _as_cookies(token):
+            existing["access_token"] = token
+
+        if cookies:
+            # Merge, so adding cf_clearance later doesn't wipe the session cookie.
+            merged = dict(existing.get("cookies") or {})
+            merged.update(cookies)
+            existing["cookies"] = merged
+            if merged.get("oai-did"):
+                existing["device_id"] = merged["oai-did"]
+            save_session("chatgpt", existing)
+            msg = f"ChatGPT logged in with {len(merged)} browser cookies! You can now use ask_chatgpt."
+            missing = [c for c in ChatGPTWebAgent.KEY_COOKIES if c not in merged]
+            if missing:
+                msg += ("\nStill missing (Turnstile 403s are likely without these): "
+                        + ", ".join(missing))
+            return msg
+
         # Otherwise treat as access token
         existing["access_token"] = token
         save_session("chatgpt", existing)
-        return "ChatGPT logged in successfully! You can now use ask_chatgpt."
+        msg = "ChatGPT logged in successfully! You can now use ask_chatgpt."
+        if not existing.get("cookies"):
+            msg += ("\nNote: no browser cookies saved. If /conversation 403s with a "
+                    "Turnstile demand, a token refresh will NOT fix it -- add cookies "
+                    "instead: ai_team_login(service='chatgpt', token='<Cookie header "
+                    "from a logged-in chatgpt.com tab>').")
+        return msg
     elif service == "gemini":
         # Detect: cookie string (has ; and =, multiple pairs), JSON dict, or API key
         # Cookie strings have multiple semicolons with key=value pairs
@@ -158,21 +191,41 @@ def ai_team_login(service: str, token: str, token2: str = "") -> str:
             # Browser cookies (free with Pro/Max subscription)
             # Accept: JSON dict, cookie header string, or single session token
             import json as _json
+
+            def _save_pplx_cookies(cookies):
+                """Merge onto what's stored (so a later cf_clearance-only paste
+                doesn't wipe the session token), then confirm the cookies actually
+                authenticate -- an expired paste otherwise fails silently, with
+                Perplexity answering as an anonymous visitor."""
+                from agents.perplexity_agent import PerplexityWebAgent
+                existing = get_session("perplexity")
+                merged = dict(existing.get("cookies") or {})
+                merged.update(cookies)
+                existing["cookies"] = merged
+                save_session("perplexity", existing)
+
+                msg = f"Perplexity saved {len(merged)} cookies ({len(cookies)} from this paste)."
+                missing = [c for c in PerplexityWebAgent.KEY_COOKIES if c not in merged]
+                if missing:
+                    msg += "\nMissing key cookies: " + ", ".join(missing)
+                ok, detail = PerplexityWebAgent.check_auth(merged)
+                if ok:
+                    msg += f"\nVerified logged in as {detail} -- you can now use ask_perplexity."
+                else:
+                    msg += (f"\nNOT authenticated ({detail}). Re-copy the whole Cookie header "
+                            "from a logged-in perplexity.ai tab in one go.")
+                return msg
+
             try:
                 cookies = _json.loads(token)
                 if isinstance(cookies, dict):
-                    save_session("perplexity", {"cookies": cookies})
-                    return (f"Perplexity logged in with {len(cookies)} cookies! Using your Pro subscription.\n"
-                            "You can now use ask_perplexity.")
+                    return _save_pplx_cookies({str(k): str(v) for k, v in cookies.items()})
             except (ValueError, TypeError):
                 pass
             # Try as cookie header string (name1=val1; name2=val2)
             if "=" in token and ";" in token:
                 from agents.perplexity_agent import parse_cookie_string
-                cookies = parse_cookie_string(token)
-                save_session("perplexity", {"cookies": cookies})
-                return (f"Perplexity logged in with {len(cookies)} cookies! Using your Pro subscription.\n"
-                        "You can now use ask_perplexity.")
+                return _save_pplx_cookies(parse_cookie_string(token))
             # Single session token fallback
             session_data = {"session_token": token}
             if token2:
@@ -270,14 +323,23 @@ def _pollinations_fallback(prompt: str, width: int = 1024, height: int = 1024, m
 
 
 @mcp.tool()
-def ask_chatgpt(task: str, context: str = "", files: Optional[list] = None) -> str:
+def ask_chatgpt(task: str, context: str = "", files: Optional[list] = None,
+                images: Optional[list] = None) -> str:
     """Send a task to ChatGPT (using your Plus/Pro subscription).
-    Best for: architecture, planning, reasoning, AND image generation.
+    Best for: architecture, planning, reasoning, image generation, AND reading images.
     For images: ChatGPT generates via DALL-E, we fetch the CDN URL, Claude displays it.
     No API key needed — uses your existing ChatGPT Plus session token.
     files: optional list of repo file paths (relative to the project) to read and include
            so ChatGPT sees your real code. Secret files (.env*, sessions.json) are skipped.
+    images: optional list of local image paths (PNG/JPEG/GIF/WEBP) to attach so ChatGPT can
+           see them — uploaded to your ChatGPT account the same way the web app does, so the
+           subscription covers it. Absolute paths anywhere on disk are fine. Max 4, 5MB each.
     """
+    if images:
+        # An attached image means "look at this", never "draw me one" — skip the
+        # generate-an-image branch even when the wording sounds like a request for art.
+        return _do_ask("chatgpt", task, _with_files(context, files), images)
+
     if _is_image_request(task):
         agent = _get_chatgpt()
         if not agent.is_ready():
@@ -285,8 +347,17 @@ def ask_chatgpt(task: str, context: str = "", files: Optional[list] = None) -> s
 
         result = agent.generate_image(task)
 
+        if result.success and "Saved to:" in result.content:
+            # Downloaded with the session's own auth. Checked before the URL case:
+            # a chatgpt.com asset URL 403s outside the agent, so "fetch this URL"
+            # is not an instruction Claude can actually carry out.
+            return (
+                f"{result.content}\n\n"
+                "Claude: read the saved file above and display the image to the user."
+            )
+
         if result.success and "Image URL:" in result.content:
-            # Got a real URL from ChatGPT/DALL-E — tell Claude to fetch it
+            # Publicly fetchable URL (e.g. DALL-E API) — Claude can fetch it.
             return (
                 f"{result.content}\n\n"
                 "Claude: fetch the Image URL above and display it to the user."
@@ -304,11 +375,18 @@ def ask_chatgpt(task: str, context: str = "", files: Optional[list] = None) -> s
 
 
 @mcp.tool()
-def ask_gemini(task: str, context: str = "", files: Optional[list] = None) -> str:
-    """Send a task to Gemini (using your Advanced subscription). Best for: code review, finding bugs, security analysis.
+def ask_gemini(task: str, context: str = "", files: Optional[list] = None,
+               images: Optional[list] = None) -> str:
+    """Send a task to Gemini (using your Advanced subscription). Best for: code review,
+    finding bugs, security analysis, AND looking at images (screenshots, mockups, error
+    dialogs, photos, diagrams).
     files: optional list of repo file paths (relative to the project) to read and include
-           so Gemini reviews your real code. Secret files (.env*, sessions.json) are skipped."""
-    return _do_ask("gemini", task, _with_files(context, files))
+           so Gemini reviews your real code. Secret files (.env*, sessions.json) are skipped.
+    images: optional list of local image paths (PNG/JPEG/GIF/WEBP) to attach so Gemini can
+           actually see them. Absolute paths anywhere on disk are fine (e.g. a screenshot in
+           Pictures or Downloads). Max 4 images, 5MB each. ask_chatgpt takes images too;
+           Perplexity does not."""
+    return _do_ask("gemini", task, _with_files(context, files), images)
 
 
 @mcp.tool()
@@ -319,18 +397,32 @@ def ask_perplexity(task: str, context: str = "", files: Optional[list] = None) -
 
 
 @mcp.tool()
-def ai_team_run(task: str, context: str = "", files: Optional[list] = None) -> str:
+def ai_team_run(task: str, context: str = "", files: Optional[list] = None,
+                images: Optional[list] = None) -> str:
     """Run the full AI team pipeline on a task.
     Pipeline: Perplexity researches -> ChatGPT designs architecture ->
     Claude implements -> Gemini reviews. Each step feeds into the next.
     Skips agents that aren't logged in.
     files: optional list of repo file paths (relative to the project) to read and feed the
            whole team — this is what stops the coder step from hallucinating your real
-           signatures. Secret files (.env*, sessions.json) are skipped."""
+           signatures. Secret files (.env*, sessions.json) are skipped.
+    images: optional list of local image paths (PNG/JPEG/GIF/WEBP), e.g. a screenshot or
+           mockup to build from. Only ChatGPT and Gemini can see images, so they get the
+           attachments and describe them for the text-only steps. Max 4, 5MB each."""
+    loaded, image_notes = load_images(images)
+    if images and not loaded:
+        return "No usable images: " + "; ".join(image_notes)
+
     team = AgentTeam(os.getcwd())
-    results = team.run_pipeline(task, _with_files(context, files))
+    results = team.run_pipeline(task, _with_files(context, files), loaded)
 
     output_lines = []
+    if loaded:
+        seen = ", ".join(i["name"] for i in loaded)
+        output_lines.append(f"[images] {seen} — sent to ChatGPT and Gemini "
+                            "(Perplexity and the Claude coder step are text-only)")
+    if image_notes:
+        output_lines.append("[image notes] " + "; ".join(image_notes))
     succeeded = 0
     for label, result in results:
         if result and result.success:
@@ -362,11 +454,16 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, model: st
     agent = _get_chatgpt()
     if agent.is_ready():
         result = agent.generate_image(prompt)
-        if result.success and "Image URL:" in result.content:
+        # Accept either form. Gating on "Image URL:" alone used to drop a
+        # successfully saved image on the floor and fall through to Pollinations,
+        # because the local-save paths never emit that prefix.
+        if result.success and ("Saved to:" in result.content
+                               or "Image URL:" in result.content):
             return (
                 f"[ChatGPT/DALL-E]\n\n"
                 f"{result.content}\n\n"
-                f"Claude: read the saved file path above and display the image to the user."
+                f"Claude: read the saved file path above (or fetch the Image URL) "
+                f"and display the image to the user."
             )
 
     # Step 2: Fallback to Pollinations (free, no key needed)
@@ -445,7 +542,7 @@ def ai_team_chat(task: str, context: str = "") -> str:
     return f"ChatGPT failed: {result.error}"
 
 
-def _do_ask(service, task, context=""):
+def _do_ask(service, task, context="", images=None):
     if service == "chatgpt":
         agent = _get_chatgpt()
     elif service == "gemini":
@@ -458,13 +555,24 @@ def _do_ask(service, task, context=""):
         return (f"{agent.name} is not logged in. Use ai_team_login tool first.\n"
                 f"Service: {service}")
 
-    result = agent.execute(task, context)
+    loaded, image_notes = load_images(images)
+    if images and not loaded:
+        # Every image was rejected -- answering from the text alone would look like
+        # the agent had seen them, so stop and say what happened instead.
+        return f"[{agent.name}] no usable images: " + "; ".join(image_notes)
+
+    result = agent.execute(task, context, images=loaded)
     if result.success:
         # Cap at 4000 chars — preserves full code reviews and research without unbounded bloat
         content = result.content[:4000]
         if len(result.content) > 4000:
             content += "\n[truncated — ask for more if needed]"
-        return f"[{result.agent_name}]\n{content}"
+        header = f"[{result.agent_name}]"
+        if loaded:
+            header += f" (saw {len(loaded)} image(s): " + ", ".join(i["name"] for i in loaded) + ")"
+        if image_notes:
+            header += "\n[image notes] " + "; ".join(image_notes)
+        return f"{header}\n{content}"
     return f"[{result.agent_name} failed]: {result.error}"
 
 

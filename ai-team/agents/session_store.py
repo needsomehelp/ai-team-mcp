@@ -1,9 +1,41 @@
 """Secure local storage for browser session tokens."""
 
+import contextlib
 import json
 import os
+import time
 
 SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sessions.json")
+_LOCK_FILE = SESSIONS_FILE + ".lock"
+_LOCK_TIMEOUT = 5.0
+
+
+@contextlib.contextmanager
+def _sessions_lock():
+    """Cross-process mutex around the read-modify-write cycle on sessions.json.
+
+    Multiple Claude Code windows each run their own mcp_server.py against the
+    same sessions.json; without this, two sessions refreshing tokens at once
+    can race load->modify->write and one process's write silently clobbers
+    the other's."""
+    deadline = time.monotonic() + _LOCK_TIMEOUT
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                # Stale lock from a crashed process; break it rather than hang forever.
+                with contextlib.suppress(OSError):
+                    os.remove(_LOCK_FILE)
+                continue
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        with contextlib.suppress(OSError):
+            os.remove(_LOCK_FILE)
 
 
 def load_sessions() -> dict:
@@ -28,9 +60,10 @@ def _write_sessions(sessions: dict):
 
 
 def save_session(service: str, token_data: dict):
-    sessions = load_sessions()
-    sessions[service] = token_data
-    _write_sessions(sessions)
+    with _sessions_lock():
+        sessions = load_sessions()
+        sessions[service] = token_data
+        _write_sessions(sessions)
 
 
 _TOKEN_FIELDS = ("access_token", "api_key", "token", "session_token", "refresh_token")
@@ -62,9 +95,10 @@ def get_session(service: str) -> dict:
 
 
 def remove_session(service: str):
-    sessions = load_sessions()
-    sessions.pop(service, None)
-    _write_sessions(sessions)
+    with _sessions_lock():
+        sessions = load_sessions()
+        sessions.pop(service, None)
+        _write_sessions(sessions)
 
 
 def list_sessions() -> dict:
